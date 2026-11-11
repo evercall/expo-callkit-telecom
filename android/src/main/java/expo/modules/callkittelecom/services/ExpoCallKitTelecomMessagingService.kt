@@ -4,9 +4,13 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import com.google.firebase.messaging.RemoteMessage
-import expo.modules.callkittelecom.managers.CallManager
 import expo.modules.callkittelecom.managers.VoIPPushManager
+import expo.modules.callkittelecom.models.CallEndedReason
 import expo.modules.callkittelecom.models.IncomingCallEvent
+import expo.modules.callkittelecom.push.NormalizedCallPush
+import expo.modules.callkittelecom.push.PushPayloadProfileStore
+import expo.modules.callkittelecom.telecom.ManagedCallManager
+import java.time.Instant
 import expo.modules.notifications.service.ExpoFirebaseMessagingService
 import java.util.concurrent.ConcurrentHashMap
 import org.json.JSONArray
@@ -40,6 +44,14 @@ class ExpoCallKitTelecomMessagingService : ExpoFirebaseMessagingService() {
     override fun onMessageReceived(message: RemoteMessage) {
         val data = message.data
 
+        PushPayloadProfileStore.normalize(applicationContext, data)?.let { normalized ->
+            val key =
+                "${normalized.profileId}:${normalized.event}:${normalized.callId}:${normalized.revision ?: 0}"
+            if (!markMessageAsNew(key)) return
+            Handler(Looper.getMainLooper()).post { processNormalizedPush(normalized) }
+            return
+        }
+
         // Try to parse as an incoming call payload.
         val eventMap = if (data.isNotEmpty()) parseIncomingCallEvent(data) else null
         if (eventMap == null) {
@@ -66,7 +78,7 @@ class ExpoCallKitTelecomMessagingService : ExpoFirebaseMessagingService() {
 
     private fun processIncomingCall(eventMap: Map<String, Any?>) {
         try {
-            CallManager.shared.initialize(applicationContext)
+            ManagedCallManager.shared.initialize(applicationContext)
 
             // Wrap under the canonical envelope so we go through the same parser path as iOS.
             val event = IncomingCallEvent.fromPayload(mapOf("incomingCall" to eventMap))
@@ -75,12 +87,56 @@ class ExpoCallKitTelecomMessagingService : ExpoFirebaseMessagingService() {
                 return
             }
 
-            CallManager.shared.reportIncomingCall(event)
+            ManagedCallManager.shared.reportIncomingCall(event)
+            ExpoCallKitTelecomHeadlessService.dispatch(
+                applicationContext,
+                "incomingPush",
+                event.serverCallId,
+            )
             Log.d(TAG, "Reported incoming call from FCM payload")
         } catch (error: IllegalStateException) {
             Log.w(TAG, "Ignoring incoming call push while another session exists: ${error.message}")
         } catch (error: Throwable) {
             Log.e(TAG, "Failed to process incoming call push: ${error.message}", error)
+        }
+    }
+
+    private fun processNormalizedPush(push: NormalizedCallPush) {
+        try {
+            ManagedCallManager.shared.initialize(applicationContext)
+            when (push.event) {
+                "incoming" -> {
+                    val expiresAt = push.expiresAt?.let { runCatching { Instant.parse(it) }.getOrNull() }
+                    if (expiresAt != null && expiresAt.isBefore(Instant.now())) {
+                        Log.d(TAG, "Dropping expired incoming call push")
+                        return
+                    }
+                    val event =
+                        IncomingCallEvent(
+                            eventId = "${push.profileId}:${push.callId}:${push.revision ?: 0}",
+                            serverCallId = push.callId,
+                            caller =
+                                IncomingCallEvent.Caller(
+                                    id = push.callerHandle,
+                                    displayName = push.callerName,
+                                    phoneNumber = push.callerHandle.takeUnless { it.contains('@') },
+                                    email = push.callerHandle.takeIf { it.contains('@') },
+                                ),
+                            hasVideo = false,
+                            startedAt = Instant.now(),
+                            metadata = mapOf("profileId" to push.profileId, "accountId" to push.accountId),
+                        )
+                    ManagedCallManager.shared.reportIncomingCall(event)
+                    ExpoCallKitTelecomHeadlessService.dispatch(applicationContext, "incomingPush", push.callId)
+                }
+                "cancelled" ->
+                    ManagedCallManager.shared.reportServerCallEnded(push.callId, CallEndedReason.REMOTE_ENDED)
+                "answeredElsewhere" ->
+                    ManagedCallManager.shared.reportServerCallEnded(push.callId, CallEndedReason.ANSWERED_ELSEWHERE)
+                else -> Log.w(TAG, "Unsupported normalized call push event: ${push.event}")
+            }
+        } catch (error: Throwable) {
+            Log.e(TAG, "Failed to process normalized call push", error)
         }
     }
 

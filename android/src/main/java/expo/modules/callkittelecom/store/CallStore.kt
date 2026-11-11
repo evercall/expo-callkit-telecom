@@ -26,7 +26,7 @@ object CallStore {
 
     private val sessionObservers = mutableMapOf<UUID, MutableMap<UUID, SessionObserver>>()
 
-    /** Returns the first active session (single-call model). */
+    /** Returns the first session for the legacy singular API. Use session(id) for call actions. */
     fun firstSession(): CallSession? = synchronized(lock) { sessions.values.firstOrNull() }
 
     /** Returns all sessions in insertion order. */

@@ -21,20 +21,20 @@ import type { PushTokenType, VoIPPushToken } from "../Calls.types";
  * @category Hooks
  */
 export function useVoIPPushToken(): VoIPPushToken | null {
-  const [token, setToken] = useState<VoIPPushToken | null>(() =>
-    getVoIPPushToken(),
-  );
+	const [token, setToken] = useState<VoIPPushToken | null>(() =>
+		getVoIPPushToken(),
+	);
 
-  useEffect(() => {
-    const subscription = addVoIPPushTokenUpdatedListener((event) => {
-      setToken(
-        event.token
-          ? { token: event.token, type: event.type as PushTokenType }
-          : null,
-      );
-    });
-    return () => subscription.remove();
-  }, []);
+	useEffect(() => {
+		const subscription = addVoIPPushTokenUpdatedListener((event) => {
+			setToken(
+				event.token
+					? { token: event.token, type: event.type as PushTokenType }
+					: null,
+			);
+		});
+		return () => subscription.remove();
+	}, []);
 
-  return token;
+	return token;
 }

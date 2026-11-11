@@ -2,6 +2,9 @@
 
 > An Expo module — written in Swift and Kotlin — that wraps **CallKit** on iOS and **Jetpack Core-Telecom** on Android with API parity. It owns the system call UI, the audio session, and VoIP push — your app owns the media (LiveKit, plain WebRTC, etc.).
 
+NOTE: Fundamentally different from upstream. This fork has diverged to allow for JSSIP & WebRTC connectivity. Do not download this and expect it to be the same as upstream because it isn't.
+Our thanks to the original developer mfairley for their project
+
 📖 **Full documentation:** [expo-callkit-telecom.mfairley.com](https://expo-callkit-telecom.mfairley.com/)
 
 <p>
@@ -225,7 +228,7 @@ function App() {
 
 See `src/Calls.ts` for full JSDoc. Main areas:
 
-- **Sessions** — `getActiveCallSession`, `addCallSession{Added,Updated,Removed}Listener`
+- **Sessions** — `getCallSessions`, `getCallSession`, `getActiveCallSession` (legacy first session), `addCallSession{Added,Updated,Removed}Listener`
 - **Outgoing** — `startOutgoingCall`, `addOutgoingCallStartedListener`, `reportOutgoingCallConnected`
 - **Incoming** — `reportIncomingCall`, `addIncomingCallReportedListener`, `answerCall`, `addCallAnsweredListener`, `fulfillIncomingCallConnected`, `failIncomingCallConnected`
 - **End** — `endCall`, `addCallEndedListener`, `reportCallEnded`

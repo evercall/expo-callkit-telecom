@@ -299,10 +299,55 @@ public class ExpoCallKitTelecomModule: Module {
       return session.toDictionary()
     }
 
+    AsyncFunction("getCallSessions") { () -> [[String: Any]] in
+      let sessions = await CallManager.shared.store.allSessions
+      return sessions.map { $0.toDictionary() }
+    }
+
+    // Internal SIP admission APIs. Kept native so queued JS events cannot resurrect calls.
+    AsyncFunction("claimIncomingSipCall") {
+      (sipCallId: String, handle: String, accountId: String?) -> [String: String] in
+      IncomingCallRegistry.shared.claim(sipCallId: sipCallId, handle: handle, accountId: accountId)
+    }
+
+    AsyncFunction("validateIncomingSipCall") {
+      (id: String, sipCallId: String?, requestId: String?) -> Bool in
+      guard let uuid = UUID(uuidString: id),
+            IncomingCallRegistry.shared.validate(id: uuid, sipCallId: sipCallId, answering: requestId != nil)
+      else { return false }
+      guard let requestId else { return true }
+      guard let requestUUID = UUID(uuidString: requestId) else { return false }
+      return await FulfillRequestManager.shared.callId(for: requestUUID) == uuid
+    }
+
+    AsyncFunction("getCallSession") { (id: String) -> [String: Any]? in
+      guard let uuid = UUID(uuidString: id) else {
+        throw Exception(name: "InvalidUUID", description: "Invalid call ID: \(id)")
+      }
+      let session = await CallManager.shared.store.session(for: uuid)
+      return session?.toDictionary()
+    }
+
     // MARK: - Audio Session
+
+    Function("getAudioDevices") { (direction: String) throws -> [[String: Any]] in
+      return try AudioManager.shared.getAudioDevices(direction: direction)
+    }
+
+    AsyncFunction("setAudioDevice") { (callId: String, direction: String, id: String) async throws in
+      guard let uuid = UUID(uuidString: callId),
+        let session = await CallManager.shared.store.session(for: uuid), session.status != .ended else {
+        throw NSError(domain: "AudioDevice", code: 3, userInfo: [NSLocalizedDescriptionKey: "Call is no longer available"])
+      }
+      try AudioManager.shared.setAudioDevice(direction: direction, id: id)
+    }
 
     Function("getAudioSessionState") { () -> [String: Any] in
       return AudioManager.shared.getAudioSessionState()
+    }
+
+    AsyncFunction("requestMicrophonePermission") { () async -> Bool in
+      return await AudioManager.shared.requestMicrophonePermission()
     }
 
     Function("setRTCAudioSessionConfiguration") { (hasVideo: Bool) in
@@ -342,11 +387,10 @@ public class ExpoCallKitTelecomModule: Module {
     // MARK: - Report Incoming Call
 
     AsyncFunction("reportIncomingCall") {
-      (event: IncomingCallEventRecord) in
+      (event: IncomingCallEventRecord) -> String in
       let incomingCallEvent = try event.toModel()
-      try await CallManager.shared.reportIncomingCall(
-        event: incomingCallEvent
-      )
+      let id = try await CallManager.shared.reportIncomingCall(event: incomingCallEvent)
+      return id.uuidString
     }
 
     // MARK: - Answer Call
@@ -370,7 +414,7 @@ public class ExpoCallKitTelecomModule: Module {
         )
       }
 
-      await CallManager.shared.fulfillIncomingCall(requestId: requestUUID)
+      return await CallManager.shared.fulfillIncomingCall(requestId: requestUUID)
     }
 
     AsyncFunction("failIncomingCallConnected") { (requestId: String) in
@@ -485,6 +529,14 @@ public class ExpoCallKitTelecomModule: Module {
     }
 
     // MARK: - VoIP Push
+
+    Function("configurePushPayloadProfiles") { (profilesJson: String) in
+      try PushPayloadProfileStore.save(json: profilesJson)
+    }
+
+    Function("getPushPayloadProfilesJson") { () -> String? in
+      PushPayloadProfileStore.read()
+    }
 
     Function("registerVoIPPush") {
       Task { @MainActor in

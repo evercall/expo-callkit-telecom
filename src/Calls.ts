@@ -50,46 +50,44 @@
  */
 
 import type { EventSubscription } from "expo-modules-core";
-import { Platform } from "react-native";
+import { PermissionsAndroid, Platform } from "react-native";
 
-import type {
-  AudioRouteChangedEvent,
-  AudioSession,
-  AudioSessionActivatedEvent,
-  AudioSessionDeactivatedEvent,
-  CallAnsweredEvent,
-  CallEndedEvent,
-  CallEndedReason,
-  CallIntentReceivedEvent,
-  CallOptions,
-  CallParticipant,
-  CallReportedEnded,
-  CallSession,
-  CallSessionAddedEvent,
-  CallSessionRemovedEvent,
-  CallSessionUpdatedEvent,
-  CaptureSession,
-  DTMFEvent,
-  IncomingCallEvent,
-  IncomingCallReportedEvent,
-  OutgoingCallStartedEvent,
-  SetHeldActionEvent,
-  SetMutedActionEvent,
-  VideoChangedEvent,
-  VoIPPushToken,
-  VoIPPushTokenUpdatedEvent,
-} from "./Calls.types";
-import type { PushTokenType } from "./Calls.types";
+import type { AudioRouteChangedEvent, AudioSession, AudioSessionActivatedEvent, AudioSessionDeactivatedEvent, CallAnsweredEvent, CallEndedEvent, CallEndedReason, CallIntentReceivedEvent, CallOptions, CallParticipant, CallReportedEnded, CallSession, CallSessionAddedEvent, CallSessionRemovedEvent, CallSessionUpdatedEvent, CaptureSession, DTMFEvent, IncomingCallEvent, IncomingCallReportedEvent, OutgoingCallStartedEvent, PushTokenType, SetHeldActionEvent, SetMutedActionEvent, VideoChangedEvent, VoIPPushToken, VoIPPushTokenUpdatedEvent, } from "./Calls.types";
 import ExpoCallKitTelecomModule from "./ExpoCallKitTelecomModule";
+
+// ============================================================================
+// Android Phone Account
+// ============================================================================
+
+/** Registers this app as a system-managed Android calling provider. */
+export function registerAndroidPhoneAccount(): void {
+	if (Platform.OS === "android") {
+		ExpoCallKitTelecomModule.registerAndroidPhoneAccount();
+	}
+}
+
+/** Returns whether the user has enabled this app's Android PhoneAccount. */
+export function isAndroidPhoneAccountEnabled(): boolean {
+	return Platform.OS !== "android" || ExpoCallKitTelecomModule.isAndroidPhoneAccountEnabled();
+}
+
+/** Opens Android's calling-account settings so the user can enable the provider. */
+export function openAndroidPhoneAccountSettings(): void {
+	if (Platform.OS === "android") {
+		ExpoCallKitTelecomModule.openAndroidPhoneAccountSettings();
+	}
+}
 
 // ============================================================================
 // Call Session
 // ============================================================================
 
 /**
- * Gets the currently active call session, if any.
+ * Gets the first stored call session, if any (legacy singular API).
+ * Use {@link getCallSessions} to include held and consultation calls, or
+ * {@link getCallSession} to address a particular native call ID.
  *
- * @returns The active call session, or `null` if no call is in progress.
+ * @returns The first call session, or `null` if no call is in progress.
  *
  * @example
  * ```typescript
@@ -102,11 +100,16 @@ import ExpoCallKitTelecomModule from "./ExpoCallKitTelecomModule";
  * @category Sessions
  */
 export async function getActiveCallSession(): Promise<CallSession | null> {
-  const session = await ExpoCallKitTelecomModule.getActiveCallSession();
-  if (session) {
-  }
-  return session;
+	return ExpoCallKitTelecomModule.getActiveCallSession();
 }
+
+/** Returns all native call sessions in insertion order, including held calls. */
+export const getCallSessions = async (): Promise<CallSession[]> =>
+	ExpoCallKitTelecomModule.getCallSessions();
+
+/** Returns a native call by its system call ID, or null after it has ended. */
+export const getCallSession = async (id: string): Promise<CallSession | null> =>
+	ExpoCallKitTelecomModule.getCallSession(id);
 
 /**
  * Subscribes to call session added events.
@@ -130,14 +133,14 @@ export async function getActiveCallSession(): Promise<CallSession | null> {
  * @category Sessions
  */
 export function addCallSessionAddedListener(
-  listener: (event: CallSessionAddedEvent) => void,
+	listener: (event: CallSessionAddedEvent) => void,
 ): EventSubscription {
-  return ExpoCallKitTelecomModule.addListener(
-    "onCallSessionAdded",
-    (event: CallSessionAddedEvent) => {
-      listener(event);
-    },
-  );
+	return ExpoCallKitTelecomModule.addListener(
+		"onCallSessionAdded",
+		(event: CallSessionAddedEvent) => {
+			listener(event);
+		},
+	);
 }
 
 /**
@@ -151,14 +154,14 @@ export function addCallSessionAddedListener(
  * @category Sessions
  */
 export function addCallSessionUpdatedListener(
-  listener: (event: CallSessionUpdatedEvent) => void,
+	listener: (event: CallSessionUpdatedEvent) => void,
 ): EventSubscription {
-  return ExpoCallKitTelecomModule.addListener(
-    "onCallSessionUpdated",
-    (event: CallSessionUpdatedEvent) => {
-      listener(event);
-    },
-  );
+	return ExpoCallKitTelecomModule.addListener(
+		"onCallSessionUpdated",
+		(event: CallSessionUpdatedEvent) => {
+			listener(event);
+		},
+	);
 }
 
 /**
@@ -172,9 +175,9 @@ export function addCallSessionUpdatedListener(
  * @category Sessions
  */
 export function addCallSessionRemovedListener(
-  listener: (event: CallSessionRemovedEvent) => void,
+	listener: (event: CallSessionRemovedEvent) => void,
 ): EventSubscription {
-  return ExpoCallKitTelecomModule.addListener("onCallSessionRemoved", listener);
+	return ExpoCallKitTelecomModule.addListener("onCallSessionRemoved", listener);
 }
 
 // ============================================================================
@@ -192,7 +195,31 @@ export function addCallSessionRemovedListener(
  * @category Audio
  */
 export function getAudioSession(): AudioSession {
-  return ExpoCallKitTelecomModule.getAudioSessionState();
+	return ExpoCallKitTelecomModule.getAudioSessionState();
+}
+
+/**
+ * Requests microphone access required for two-way call audio.
+ *
+ * Consumers should call this from an appropriate user-facing point before
+ * starting or answering a call. The config plugin supplies the corresponding
+ * platform usage description and manifest permission.
+ *
+ * @returns Whether microphone access is granted.
+ *
+ * @category Permissions
+ */
+export async function requestMicrophonePermission(): Promise<boolean> {
+	if (Platform.OS === "ios") {
+		return ExpoCallKitTelecomModule.requestMicrophonePermission();
+	}
+	if (Platform.OS === "android") {
+		const result = await PermissionsAndroid.request(
+			PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
+		);
+		return result === PermissionsAndroid.RESULTS.GRANTED;
+	}
+	return true;
 }
 
 /**
@@ -205,7 +232,7 @@ export function getAudioSession(): AudioSession {
  * @category Capture
  */
 export function getCaptureSession(): CaptureSession {
-  return ExpoCallKitTelecomModule.getCaptureSessionState();
+	return ExpoCallKitTelecomModule.getCaptureSessionState();
 }
 
 /**
@@ -221,9 +248,9 @@ export function getCaptureSession(): CaptureSession {
  * @category Audio
  */
 export function setRTCAudioSessionConfiguration(hasVideo: boolean): void {
-  if (Platform.OS === "ios") {
-    ExpoCallKitTelecomModule.setRTCAudioSessionConfiguration(hasVideo);
-  }
+	if (Platform.OS === "ios") {
+		ExpoCallKitTelecomModule.setRTCAudioSessionConfiguration(hasVideo);
+	}
 }
 
 /**
@@ -242,7 +269,7 @@ export function setRTCAudioSessionConfiguration(hasVideo: boolean): void {
  * @category Audio
  */
 export function prepareAudioSessionForCall(hasVideo: boolean): void {
-  ExpoCallKitTelecomModule.prepareAudioSessionForCall(hasVideo);
+	ExpoCallKitTelecomModule.prepareAudioSessionForCall(hasVideo);
 }
 
 /**
@@ -257,7 +284,7 @@ export function prepareAudioSessionForCall(hasVideo: boolean): void {
  * @category Audio
  */
 export function restoreAudioSession(): void {
-  ExpoCallKitTelecomModule.restoreAudioSession();
+	ExpoCallKitTelecomModule.restoreAudioSession();
 }
 
 /**
@@ -271,7 +298,7 @@ export function restoreAudioSession(): void {
  * @category Audio
  */
 export function setAudioSessionPortOverride(enabled: boolean): void {
-  ExpoCallKitTelecomModule.setAudioSessionPortOverride(enabled);
+	ExpoCallKitTelecomModule.setAudioSessionPortOverride(enabled);
 }
 
 /**
@@ -286,9 +313,9 @@ export function setAudioSessionPortOverride(enabled: boolean): void {
  * @category Audio Events
  */
 export function addAudioSessionActivatedListener(
-  listener: (event: AudioSessionActivatedEvent) => void,
+	listener: (event: AudioSessionActivatedEvent) => void,
 ): EventSubscription {
-  return ExpoCallKitTelecomModule.addListener("onAudioSessionActivated", listener);
+	return ExpoCallKitTelecomModule.addListener("onAudioSessionActivated", listener);
 }
 
 /**
@@ -302,9 +329,9 @@ export function addAudioSessionActivatedListener(
  * @category Audio Events
  */
 export function addAudioSessionDeactivatedListener(
-  listener: (event: AudioSessionDeactivatedEvent) => void,
+	listener: (event: AudioSessionDeactivatedEvent) => void,
 ): EventSubscription {
-  return ExpoCallKitTelecomModule.addListener("onAudioSessionDeactivated", listener);
+	return ExpoCallKitTelecomModule.addListener("onAudioSessionDeactivated", listener);
 }
 
 /**
@@ -319,9 +346,9 @@ export function addAudioSessionDeactivatedListener(
  * @category Audio Events
  */
 export function addAudioRouteChangedListener(
-  listener: (event: AudioRouteChangedEvent) => void,
+	listener: (event: AudioRouteChangedEvent) => void,
 ): EventSubscription {
-  return ExpoCallKitTelecomModule.addListener("onAudioRouteChanged", listener);
+	return ExpoCallKitTelecomModule.addListener("onAudioRouteChanged", listener);
 }
 
 // ============================================================================
@@ -344,9 +371,9 @@ export function addAudioRouteChangedListener(
  * @category Call Events
  */
 export function addCallIntentReceivedListener(
-  listener: (event: CallIntentReceivedEvent) => void,
+	listener: (event: CallIntentReceivedEvent) => void,
 ): EventSubscription {
-  return ExpoCallKitTelecomModule.addListener("onCallIntentReceived", listener);
+	return ExpoCallKitTelecomModule.addListener("onCallIntentReceived", listener);
 }
 
 // ============================================================================
@@ -379,10 +406,10 @@ export function addCallIntentReceivedListener(
  * @category Requests
  */
 export async function startOutgoingCall(
-  recipient: CallParticipant,
-  options: CallOptions,
+	recipient: CallParticipant,
+	options: CallOptions,
 ): Promise<string> {
-  return await ExpoCallKitTelecomModule.startOutgoingCall(recipient, options);
+	return await ExpoCallKitTelecomModule.startOutgoingCall(recipient, options);
 }
 
 /**
@@ -401,9 +428,9 @@ export async function startOutgoingCall(
  * @category Call Events
  */
 export function addOutgoingCallStartedListener(
-  listener: (event: OutgoingCallStartedEvent) => void,
+	listener: (event: OutgoingCallStartedEvent) => void,
 ): EventSubscription {
-  return ExpoCallKitTelecomModule.addListener("onOutgoingCallStarted", listener);
+	return ExpoCallKitTelecomModule.addListener("onOutgoingCallStarted", listener);
 }
 
 // ============================================================================
@@ -417,6 +444,7 @@ export function addOutgoingCallStartedListener(
  * an incoming call. The system will display the incoming call UI.
  *
  * @param event - The incoming call event containing caller information.
+ * @returns The native call session ID assigned to this incoming call.
  *
  * @example
  * ```typescript
@@ -440,9 +468,9 @@ export function addOutgoingCallStartedListener(
  * @category Reporters
  */
 export async function reportIncomingCall(
-  event: IncomingCallEvent,
-): Promise<void> {
-  await ExpoCallKitTelecomModule.reportIncomingCall(event);
+	event: IncomingCallEvent,
+): Promise<string> {
+	return ExpoCallKitTelecomModule.reportIncomingCall(event);
 }
 
 /**
@@ -461,9 +489,9 @@ export async function reportIncomingCall(
  * @category Call Events
  */
 export function addIncomingCallReportedListener(
-  listener: (event: IncomingCallReportedEvent) => void,
+	listener: (event: IncomingCallReportedEvent) => void,
 ): EventSubscription {
-  return ExpoCallKitTelecomModule.addListener("onIncomingCallReported", listener);
+	return ExpoCallKitTelecomModule.addListener("onIncomingCallReported", listener);
 }
 
 // ============================================================================
@@ -485,7 +513,7 @@ export function addIncomingCallReportedListener(
  * @category Requests
  */
 export async function answerCall(id: string): Promise<void> {
-  await ExpoCallKitTelecomModule.answerCall(id);
+	await ExpoCallKitTelecomModule.answerCall(id);
 }
 
 /**
@@ -504,9 +532,9 @@ export async function answerCall(id: string): Promise<void> {
  * @category Call Events
  */
 export function addCallAnsweredListener(
-  listener: (event: CallAnsweredEvent) => void,
+	listener: (event: CallAnsweredEvent) => void,
 ): EventSubscription {
-  return ExpoCallKitTelecomModule.addListener("onCallAnswered", listener);
+	return ExpoCallKitTelecomModule.addListener("onCallAnswered", listener);
 }
 
 // ============================================================================
@@ -527,9 +555,9 @@ export function addCallAnsweredListener(
  * @category Fulfillers
  */
 export async function fulfillIncomingCallConnected(
-  requestId: string,
+	requestId: string,
 ): Promise<void> {
-  await ExpoCallKitTelecomModule.fulfillIncomingCallAnswered(requestId);
+	await ExpoCallKitTelecomModule.fulfillIncomingCallAnswered(requestId);
 }
 
 /**
@@ -550,14 +578,14 @@ export async function fulfillIncomingCallConnected(
  * @category Fulfillers
  */
 export async function failIncomingCallConnected(
-  id: string,
-  requestId: string,
+	id: string,
+	requestId: string,
 ): Promise<void> {
-  if (Platform.OS === "ios") {
-    await ExpoCallKitTelecomModule.failIncomingCallConnected(requestId);
-  } else {
-    await ExpoCallKitTelecomModule.reportCallEnded(id, "failed");
-  }
+	if (Platform.OS === "ios") {
+		await ExpoCallKitTelecomModule.failIncomingCallConnected(requestId);
+	} else {
+		await ExpoCallKitTelecomModule.reportCallEnded(id, "failed");
+	}
 }
 
 // ============================================================================
@@ -578,7 +606,7 @@ export async function failIncomingCallConnected(
  * @category Reporters
  */
 export async function reportOutgoingCallConnected(id: string): Promise<void> {
-  await ExpoCallKitTelecomModule.reportOutgoingCallConnected(id);
+	await ExpoCallKitTelecomModule.reportOutgoingCallConnected(id);
 }
 
 // ============================================================================
@@ -600,7 +628,7 @@ export async function reportOutgoingCallConnected(id: string): Promise<void> {
  * @category Requests
  */
 export async function endCall(id: string): Promise<void> {
-  await ExpoCallKitTelecomModule.endCall(id);
+	await ExpoCallKitTelecomModule.endCall(id);
 }
 
 /**
@@ -618,9 +646,9 @@ export async function endCall(id: string): Promise<void> {
  * @category Call Events
  */
 export function addCallEndedListener(
-  listener: (event: CallEndedEvent) => void,
+	listener: (event: CallEndedEvent) => void,
 ): EventSubscription {
-  return ExpoCallKitTelecomModule.addListener("onCallEnded", listener);
+	return ExpoCallKitTelecomModule.addListener("onCallEnded", listener);
 }
 
 /**
@@ -647,10 +675,10 @@ export function addCallEndedListener(
  * @category Reporters
  */
 export async function reportCallEnded(
-  id: string,
-  reason: CallEndedReason,
+	id: string,
+	reason: CallEndedReason,
 ): Promise<void> {
-  await ExpoCallKitTelecomModule.reportCallEnded(id, reason);
+	await ExpoCallKitTelecomModule.reportCallEnded(id, reason);
 }
 
 /**
@@ -667,9 +695,9 @@ export async function reportCallEnded(
  * @category Call Events
  */
 export function addReportedCallEndedListener(
-  listener: (event: CallReportedEnded) => void,
+	listener: (event: CallReportedEnded) => void,
 ): EventSubscription {
-  return ExpoCallKitTelecomModule.addListener("onCallReportedEnded", listener);
+	return ExpoCallKitTelecomModule.addListener("onCallReportedEnded", listener);
 }
 
 // ============================================================================
@@ -690,7 +718,7 @@ export function addReportedCallEndedListener(
  * @category Requests
  */
 export async function setMuted(id: string, muted: boolean): Promise<void> {
-  await ExpoCallKitTelecomModule.setMuted(id, muted);
+	await ExpoCallKitTelecomModule.setMuted(id, muted);
 }
 
 /**
@@ -707,9 +735,9 @@ export async function setMuted(id: string, muted: boolean): Promise<void> {
  * @category Call Events
  */
 export function addSetMutedActionListener(
-  listener: (event: SetMutedActionEvent) => void,
+	listener: (event: SetMutedActionEvent) => void,
 ): EventSubscription {
-  return ExpoCallKitTelecomModule.addListener("onSetMutedAction", listener);
+	return ExpoCallKitTelecomModule.addListener("onSetMutedAction", listener);
 }
 
 // ============================================================================
@@ -729,7 +757,7 @@ export function addSetMutedActionListener(
  * @category Reporters
  */
 export async function reportVideo(id: string, enabled: boolean): Promise<void> {
-  await ExpoCallKitTelecomModule.reportVideo(id, enabled);
+	await ExpoCallKitTelecomModule.reportVideo(id, enabled);
 }
 
 /**
@@ -745,9 +773,9 @@ export async function reportVideo(id: string, enabled: boolean): Promise<void> {
  * @category Call Events
  */
 export function addVideoChangedListener(
-  listener: (event: VideoChangedEvent) => void,
+	listener: (event: VideoChangedEvent) => void,
 ): EventSubscription {
-  return ExpoCallKitTelecomModule.addListener("onVideoChanged", listener);
+	return ExpoCallKitTelecomModule.addListener("onVideoChanged", listener);
 }
 
 // ============================================================================
@@ -768,7 +796,7 @@ export function addVideoChangedListener(
  * @category Requests
  */
 export async function setHeld(id: string, onHold: boolean): Promise<void> {
-  await ExpoCallKitTelecomModule.setHeld(id, onHold);
+	await ExpoCallKitTelecomModule.setHeld(id, onHold);
 }
 
 /**
@@ -785,9 +813,9 @@ export async function setHeld(id: string, onHold: boolean): Promise<void> {
  * @category Call Events
  */
 export function addSetHeldActionListener(
-  listener: (event: SetHeldActionEvent) => void,
+	listener: (event: SetHeldActionEvent) => void,
 ): EventSubscription {
-  return ExpoCallKitTelecomModule.addListener("onSetHeldAction", listener);
+	return ExpoCallKitTelecomModule.addListener("onSetHeldAction", listener);
 }
 
 // ============================================================================
@@ -808,7 +836,7 @@ export function addSetHeldActionListener(
  * @category Requests
  */
 export async function playDTMF(id: string, digits: string): Promise<void> {
-  await ExpoCallKitTelecomModule.playDTMF(id, digits);
+	await ExpoCallKitTelecomModule.playDTMF(id, digits);
 }
 
 /**
@@ -825,9 +853,9 @@ export async function playDTMF(id: string, digits: string): Promise<void> {
  * @category Call Events
  */
 export function addDTMFListener(
-  listener: (event: DTMFEvent) => void,
+	listener: (event: DTMFEvent) => void,
 ): EventSubscription {
-  return ExpoCallKitTelecomModule.addListener("onDTMF", listener);
+	return ExpoCallKitTelecomModule.addListener("onDTMF", listener);
 }
 
 // ============================================================================
@@ -863,7 +891,7 @@ export function addDTMFListener(
  * @category VoIP Push
  */
 export function registerVoIPPush(): void {
-  ExpoCallKitTelecomModule.registerVoIPPush();
+	ExpoCallKitTelecomModule.registerVoIPPush();
 }
 
 /**
@@ -888,12 +916,12 @@ export function registerVoIPPush(): void {
  * @category VoIP Push
  */
 export function getVoIPPushToken(): VoIPPushToken | null {
-  const result = ExpoCallKitTelecomModule.getVoIPPushToken();
-  if (!result.token) return null;
-  return {
-    token: result.token,
-    type: result.type as PushTokenType,
-  };
+	const result = ExpoCallKitTelecomModule.getVoIPPushToken();
+	if (!result.token) return null;
+	return {
+		token: result.token,
+		type: result.type as PushTokenType,
+	};
 }
 
 /**
@@ -924,7 +952,7 @@ export function getVoIPPushToken(): VoIPPushToken | null {
  * @category VoIP Push
  */
 export function addVoIPPushTokenUpdatedListener(
-  listener: (event: VoIPPushTokenUpdatedEvent) => void,
+	listener: (event: VoIPPushTokenUpdatedEvent) => void,
 ): EventSubscription {
-  return ExpoCallKitTelecomModule.addListener("onVoIPPushTokenUpdated", listener);
+	return ExpoCallKitTelecomModule.addListener("onVoIPPushTokenUpdated", listener);
 }

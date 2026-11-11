@@ -1,4 +1,5 @@
 import Foundation
+import CallKit
 import PushKit
 
 extension VoIPPushManager: PKPushRegistryDelegate {
@@ -62,13 +63,27 @@ extension VoIPPushManager: PKPushRegistryDelegate {
 
     Log.voipPush.debug("Received VoIP push - payload keys: \(dictionaryPayload.keys)")
 
-    guard let event = IncomingCallEventParser.parse(from: dictionaryPayload) else {
+    if let normalized = PushPayloadProfileStore.normalize(payload: dictionaryPayload) {
+      processNormalizedPush(normalized, completion: completion)
+      return
+    }
+
+    guard let parsedEvent = IncomingCallEventParser.parse(from: dictionaryPayload) else {
       Log.voipPush.error("Failed to parse VoIP push payload as IncomingCallEvent")
       // We must still report a call to CallKit even on parse failure, or the
       // app will be terminated.
       reportFailedIncomingCall(completion: completion)
       return
     }
+
+    var metadata = parsedEvent.metadata ?? [:]
+    metadata["incomingSource"] = "push"
+    metadata["pushHasCallId"] = true
+    let event = IncomingCallEvent(
+      eventId: parsedEvent.eventId, serverCallId: parsedEvent.serverCallId,
+      caller: parsedEvent.caller, hasVideo: parsedEvent.hasVideo,
+      startedAt: parsedEvent.startedAt, metadata: metadata
+    )
 
     Log.voipPush.debug(
       "Parsed incoming call event - serverCallId: \(event.serverCallId)"
@@ -86,6 +101,60 @@ extension VoIPPushManager: PKPushRegistryDelegate {
     }
   }
 
+  private nonisolated func processNormalizedPush(
+    _ push: NormalizedCallPush,
+    completion: @escaping () -> Void
+  ) {
+    if push.event != "incoming" {
+      if push.hasCallId {
+        IncomingCallRegistry.shared.cancelPush(
+          serverCallId: push.callId, handle: push.callerHandle, accountId: push.accountId
+        )
+      }
+      Task {
+        let sessions = await CallManager.shared.store.allSessions
+        if let session = sessions.first(where: {
+          $0.incomingCallEvent?.serverCallId == push.callId
+        }) {
+          let reason: CXCallEndedReason =
+            push.event == "answeredElsewhere" ? .answeredElsewhere : .remoteEnded
+          await CallManager.shared.reportCallEnded(for: session.id, reason: reason)
+        }
+        completion()
+      }
+      return
+    }
+
+    let caller = IncomingCallEvent.Caller(
+      id: push.callerHandle,
+      displayName: push.callerName,
+      avatarUrl: nil,
+      phoneNumber: push.callerHandle.contains("@") ? nil : push.callerHandle,
+      email: push.callerHandle.contains("@") ? push.callerHandle : nil
+    )
+    var metadata: [String: Any] = [
+      "profileId": push.profileId, "incomingSource": "push", "pushHasCallId": push.hasCallId
+    ]
+    if let expiresAt = push.expiresAt { metadata["expiresAt"] = expiresAt }
+    if let accountId = push.accountId {
+      metadata["accountId"] = accountId
+    }
+    let event = IncomingCallEvent(
+      eventId: "\(push.profileId):\(push.callId):\(push.revision ?? 0)",
+      serverCallId: push.callId,
+      caller: caller,
+      hasVideo: false,
+      startedAt: Date(),
+      metadata: metadata
+    )
+    CallManager.shared.reportIncomingCall(event: event) { error in
+      if let error {
+        Log.voipPush.error("Failed to report normalized incoming call: \(error.localizedDescription)")
+      }
+      completion()
+    }
+  }
+
   /// Reports a failed incoming call to CallKit when we can't parse the push payload.
   ///
   /// Per Apple's requirements, we must report a call to CallKit when receiving a VoIP push.
@@ -96,7 +165,7 @@ extension VoIPPushManager: PKPushRegistryDelegate {
       serverCallId: UUID().uuidString.lowercased(),
       caller: IncomingCallEvent.Caller(
         id: UUID().uuidString,
-        displayName: "Invalid Call",
+        displayName: nil,
         avatarUrl: nil,
         phoneNumber: nil,
         email: nil
@@ -113,7 +182,10 @@ extension VoIPPushManager: PKPushRegistryDelegate {
       }
       // Immediately end the call since it's invalid
       Task {
-        if let session = await CallManager.shared.store.firstSession {
+        let sessions = await CallManager.shared.store.allSessions
+        if let session = sessions.first(where: {
+          $0.incomingCallEvent?.serverCallId == fallbackEvent.serverCallId
+        }) {
           await CallManager.shared.reportCallEnded(for: session.id, reason: .failed)
         }
       }

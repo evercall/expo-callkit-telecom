@@ -37,7 +37,11 @@ actor CallStore {
 
   /// Remove a session by its system call ID. No-op if session doesn't exist.
   func remove(for id: UUID) {
+    IncomingCallRegistry.shared.end(id: id)
     guard sessions.removeValue(forKey: id) != nil else { return }
+    // Native DTMF cancellation must not wait for a JavaScript event callback.
+    NotificationCenter.default.post(
+      name: Notification.Name("ExpoCallKitTelecomCallSessionRemoved"), object: id.uuidString)
     Task { @MainActor in
       CallEventEmitter.shared.send(CallSessionRemovedEvent(id: id))
     }
@@ -47,6 +51,11 @@ actor CallStore {
   func removeAll() {
     let ids = Array(sessions.keys)
     sessions.removeAll()
+    for id in ids {
+      IncomingCallRegistry.shared.end(id: id)
+      NotificationCenter.default.post(
+        name: Notification.Name("ExpoCallKitTelecomCallSessionRemoved"), object: id.uuidString)
+    }
     Task { @MainActor in
       for id in ids {
         CallEventEmitter.shared.send(CallSessionRemovedEvent(id: id))

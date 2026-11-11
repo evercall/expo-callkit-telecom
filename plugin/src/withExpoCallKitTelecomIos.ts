@@ -5,8 +5,8 @@ import {
   withInfoPlist,
   withXcodeProject,
 } from "expo/config-plugins";
-import { copyFileSync, existsSync } from "fs";
-import { basename, resolve } from "path";
+import { existsSync } from "fs";
+import { basename, relative, resolve } from "path";
 
 import {
   DEFAULT_FULFILL_ANSWER_CALL_TIMEOUT,
@@ -151,24 +151,20 @@ function setSoundFiles(
     throw new Error(`${ERROR_MSG_PREFIX}Unable to find iOS project name.`);
   }
 
-  const sourceRoot = resolve(projectRoot, "ios", projectName);
-
   for (const soundPath of sounds) {
-    const filename = basename(soundPath);
     const sourcePath = resolve(projectRoot, soundPath);
-    const destinationPath = resolve(sourceRoot, filename);
+    const projectRelativePath = relative(resolve(projectRoot, "ios"), sourcePath);
 
     if (!existsSync(sourcePath)) {
       throw new Error(`${ERROR_MSG_PREFIX}Sound file not found: ${sourcePath}`);
     }
 
-    // Copy the file to the iOS project directory
-    copyFileSync(sourcePath, destinationPath);
-
-    // Add the file to the Xcode project if not already present
-    if (!config.modResults.hasFile(`${projectName}/${filename}`)) {
+    // Reference the original asset instead of copying it into the native tree.
+    // Expo Asset uses the same project-relative reference, allowing Xcode's
+    // project helper to de-duplicate files shared by both plugins.
+    if (!config.modResults.hasFile(projectRelativePath)) {
       config.modResults = IOSConfig.XcodeUtils.addResourceFileToGroup({
-        filepath: `${projectName}/${filename}`,
+        filepath: projectRelativePath,
         groupName: projectName,
         isBuildFile: true,
         project: config.modResults,

@@ -1,26 +1,27 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-  <uses-permission android:name="android.permission.MANAGE_OWN_CALLS" />
+  <uses-permission android:name="android.permission.CALL_PHONE" />
+  <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+  <uses-permission android:name="android.permission.READ_PHONE_NUMBERS" />
   <uses-permission android:name="android.permission.RECORD_AUDIO" />
-  <uses-permission android:name="android.permission.CAMERA" />
-  <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-  <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
   <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-  <uses-permission android:name="android.permission.FOREGROUND_SERVICE_PHONE_CALL" />
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+  <uses-permission android:name="android.permission.WAKE_LOCK" />
 
   <application>
-    <activity
-      android:name="expo.modules.callkittelecom.IncomingCallActivity"
+    <service
+      android:name="expo.modules.callkittelecom.services.CallMicrophoneService"
       android:exported="false"
-      android:showWhenLocked="true"
-      android:turnScreenOn="true"
-      android:launchMode="singleInstance"
-      android:excludeFromRecents="true"
-      android:taskAffinity=""
-      android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen" />
+      android:foregroundServiceType="microphone" />
 
-    <receiver
-      android:name="expo.modules.callkittelecom.services.CallNotificationReceiver"
-      android:exported="false" />
+    <service
+      android:name="expo.modules.callkittelecom.telecom.ManagedConnectionService"
+      android:exported="true"
+      android:label="@string/app_name"
+      android:permission="android.permission.BIND_TELECOM_CONNECTION_SERVICE">
+      <intent-filter>
+        <action android:name="android.telecom.ConnectionService" />
+      </intent-filter>
+    </service>
 
     <service
       android:name="expo.modules.callkittelecom.services.ExpoCallKitTelecomMessagingService"
@@ -29,5 +30,9 @@
         <action android:name="com.google.firebase.MESSAGING_EVENT" />
       </intent-filter>
     </service>
+
+    <service
+      android:name="expo.modules.callkittelecom.services.ExpoCallKitTelecomHeadlessService"
+      android:exported="false" />
   </application>
 </manifest>

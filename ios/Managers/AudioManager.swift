@@ -1,4 +1,5 @@
 import AVFoundation
+import UIKit
 import WebRTC
 import os
 
@@ -91,8 +92,9 @@ private struct SavedAudioSessionConfig {
 /// 3. **CallKit Activation**: When CallKit activates the audio session,
 ///    `onAVAudioSessionActivated()` notifies WebRTC and enables audio.
 ///
-/// 4. **CallKit Deactivation**: When the call ends, `onAVAudioSessionDeactivated()`
-///    disables audio and restores the pre-call audio configuration.
+/// 4. **CallKit Deactivation**: `onAVAudioSessionDeactivated()` disables audio.
+///    Temporary deactivation (hold/interruption) retains the call configuration;
+///    the pre-call configuration is restored after the last call ends.
 ///
 /// Note: The LiveKit SDK's AudioSession.ts can also be used to configure audio based on call state:
 /// https://github.com/livekit/client-sdk-react-native/blob/main/src/audio/AudioSession.ts#L206
@@ -158,6 +160,110 @@ final class AudioManager {
     RTCAudioSessionConfiguration.setWebRTC(config)
   }
 
+  // MARK: - Device selection
+
+  private func deviceType(_ port: AVAudioSession.Port) -> String {
+    switch port {
+    case .builtInMic: return "builtin_mic"
+    case .builtInSpeaker: return "builtin_speaker"
+    case .builtInReceiver: return "builtin_earpiece"
+    case .bluetoothHFP: return "bluetooth_hfp"
+    case .bluetoothA2DP: return "bluetooth_a2dp"
+    case .bluetoothLE: return "bluetooth_le"
+    case .headsetMic: return "wired_headset"
+    case .headphones: return "wired_headphones"
+    case .usbAudio: return "usb"
+    case .HDMI: return "hdmi"
+    case .lineIn, .lineOut: return "line"
+    case .airPlay: return "airplay"
+    case .carAudio: return "car_audio"
+    default: return "unknown"
+    }
+  }
+
+  private func isPairedOutputActive(
+    input: AVAudioSessionPortDescription,
+    outputType: AVAudioSession.Port,
+    route: AVAudioSessionRouteDescription
+  ) -> Bool? {
+    guard !route.outputs.isEmpty else { return nil }
+    let outputs = route.outputs.filter { $0.portType == outputType }
+    guard !outputs.isEmpty else { return false }
+    if outputs.contains(where: { $0.uid == input.uid }) { return true }
+    // Duplex accessories can have different input/output UIDs. For the known
+    // paired port kinds, the current input identifies which accessory is in use.
+    if route.inputs.contains(where: { $0.uid == input.uid }) {
+      return outputs.count == 1 ? true : nil
+    }
+    if route.inputs.contains(where: { $0.portType == input.portType }) { return false }
+    // Matching a type or friendly name alone cannot distinguish two headsets.
+    return nil
+  }
+
+  func getAudioDevices(direction: String) throws -> [[String: Any]] {
+    guard direction == "input" || direction == "output" else {
+      throw NSError(domain: "AudioDevice", code: 1, userInfo: [NSLocalizedDescriptionKey: "Invalid audio device direction"])
+    }
+    let session = AVAudioSession.sharedInstance()
+    let inputs = session.availableInputs ?? []
+    let route = session.currentRoute
+    let descriptor = { (id: String, name: String, port: AVAudioSession.Port, active: Bool?) -> [String: Any] in
+      let activity: Any = active.map { $0 as Any } ?? NSNull()
+      return ["id": id, "direction": direction, "type": self.deviceType(port),
+              "friendlyName": name, "nativeType": port.rawValue, "routing": "paired",
+              "isActive": activity]
+    }
+    if direction == "input" {
+      return inputs.map { input in
+        let active: Bool? = route.inputs.isEmpty ? nil : route.inputs.contains { $0.uid == input.uid }
+        return descriptor("input:" + input.uid, input.portName, input.portType, active)
+      }
+    }
+    // AVAudioSession has no availableOutputs API. Only advertise outputs we can
+    // select via an input, plus the built-in speaker/receiver overrides.
+    let speakerActive: Bool? = route.outputs.isEmpty ? nil : route.outputs.contains { $0.portType == .builtInSpeaker }
+    var devices = [descriptor("output:speaker", "Speaker", .builtInSpeaker, speakerActive)]
+    if UIDevice.current.userInterfaceIdiom == .phone,
+      inputs.contains(where: { $0.portType == .builtInMic }) {
+      let receiverActive: Bool? = route.outputs.isEmpty ? nil : route.outputs.contains { $0.portType == .builtInReceiver }
+      devices.append(descriptor("output:receiver", "Earpiece", .builtInReceiver, receiverActive))
+    }
+    let pairedPorts: [AVAudioSession.Port] = [.bluetoothHFP, .bluetoothLE, .headsetMic, .carAudio]
+    for input in inputs where pairedPorts.contains(input.portType) {
+      let outputType: AVAudioSession.Port = input.portType == .headsetMic ? .headphones : input.portType
+      let active = isPairedOutputActive(input: input, outputType: outputType, route: route)
+      devices.append(descriptor("output:paired:" + input.uid, input.portName, outputType, active))
+    }
+    return devices
+  }
+
+  func setAudioDevice(direction: String, id: String) throws {
+    guard try getAudioDevices(direction: direction).contains(where: { ($0["id"] as? String) == id }) else {
+      throw NSError(domain: "AudioDevice", code: 2, userInfo: [NSLocalizedDescriptionKey: "Audio device is no longer available"])
+    }
+    let session = AVAudioSession.sharedInstance()
+    let rtcSession = RTCAudioSession.sharedInstance()
+    rtcSession.lockForConfiguration()
+    defer { rtcSession.unlockForConfiguration() }
+    if id == "output:speaker" {
+      try rtcSession.overrideOutputAudioPort(.speaker)
+      return
+    }
+    let inputs = session.availableInputs ?? []
+    let input: AVAudioSessionPortDescription?
+    if id == "output:receiver" {
+      input = inputs.first { $0.portType == .builtInMic }
+    } else {
+      let prefix = direction == "input" ? "input:" : "output:paired:"
+      input = inputs.first { prefix + $0.uid == id }
+    }
+    guard let input else {
+      throw NSError(domain: "AudioDevice", code: 2, userInfo: [NSLocalizedDescriptionKey: "Audio input disconnected"])
+    }
+    try rtcSession.overrideOutputAudioPort(.none)
+    try rtcSession.setPreferredInput(input)
+  }
+
   // MARK: - State
 
   /// Returns the current audio session state.
@@ -206,6 +312,18 @@ final class AudioManager {
         "outputs": outputs,
       ],
     ]
+  }
+
+  /// Requests the runtime permission needed to capture call audio.
+  func requestMicrophonePermission() async -> Bool {
+    if #available(iOS 17.0, *) {
+      return await AVAudioApplication.requestRecordPermission()
+    }
+    return await withCheckedContinuation { continuation in
+      AVAudioSession.sharedInstance().requestRecordPermission { granted in
+        continuation.resume(returning: granted)
+      }
+    }
   }
 
   // MARK: - Configuration
@@ -292,9 +410,15 @@ final class AudioManager {
 
   /// Called when CallKit activates the audio session.
   /// This happens after the user answers a call or starts an outgoing call.
-  /// Audio session should already be configured via prepareAudioSessionForCall() before this is called.
+  /// Reapplies the call configuration before enabling audio, including on resume.
   /// - Parameter calls: The current active call sessions.
   func onAVAudioSessionActivated(calls: [CallSession]) {
+    let activeCalls = calls.filter { $0.status != .ended }
+    if !activeCalls.isEmpty {
+      // Activation also occurs when resuming hold or an interruption. The
+      // AudioEngine requires a recording-capable category before it restarts.
+      prepareAudioSessionForCall(hasVideo: activeCalls.contains { $0.options.hasVideo })
+    }
     isActive = true
 
     let session = RTCAudioSession.sharedInstance()
@@ -314,8 +438,8 @@ final class AudioManager {
   }
 
   /// Called when CallKit deactivates the audio session.
-  /// This happens when the call ends.
-  /// - Parameter calls: The call sessions that were active when deactivation occurred.
+  /// This also happens during hold or interruptions while calls still exist.
+  /// - Parameter calls: The current call sessions, including held calls.
   func onAVAudioSessionDeactivated(calls: [CallSession]) {
     isActive = false
 
@@ -326,8 +450,12 @@ final class AudioManager {
     // Notify WebRTC that CallKit deactivated the audio session
     rtcSession.audioSessionDidDeactivate(AVAudioSession.sharedInstance())
 
-    // Restore the audio session configuration from before the call
-    restoreAudioSession()
+    // Hold/interruption releases CallKit audio ownership, but does not end
+    // the call. Keep both the call configuration and the original snapshot
+    // until the last live call is removed (or marked ended).
+    if calls.allSatisfy({ $0.status == .ended }) {
+      restoreAudioSession()
+    }
 
     Log.audio.debug("RTC audio session deactivated")
 

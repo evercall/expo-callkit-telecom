@@ -31,7 +31,7 @@ actor FulfillRequestManager {
     let id: UUID
     let callId: UUID
     let createdAt: Date
-    let continuation: CheckedContinuation<Result, Never>
+    let continuation: AsyncStream<Result>.Continuation
     let timeoutTask: Task<Void, Never>
   }
 
@@ -52,41 +52,23 @@ actor FulfillRequestManager {
   ) {
     let requestId = UUID()
 
-    let resultTask = Task<Result, Never> { [weak self] in
-      await withCheckedContinuation { continuation in
-        guard let self = self else {
-          continuation.resume(returning: .timedOut)
-          return
-        }
-
-        let timeoutTask = Task { [weak self] in
-          try? await Task.sleep(for: timeout)
-
-          guard !Task.isCancelled, let self = self else { return }
-
-          // Timeout expired - remove and resume with timedOut
-          if let request = await self.removeRequest(for: requestId) {
-            Log.call.debug("Fulfill request timed out - requestId: \(requestId)")
-            request.continuation.resume(returning: .timedOut)
-          }
-        }
-
-        let request = PendingRequest(
-          id: requestId,
-          callId: callId,
-          createdAt: Date(),
-          continuation: continuation,
-          timeoutTask: timeoutTask
-        )
-
-        Task { [weak self] in
-          await self?.addRequest(request)
-        }
-
-        Log.call.debug(
-          "Created fulfill request - requestId: \(requestId), callId: \(callId), timeout: \(timeout)"
-        )
+    let (stream, continuation) = AsyncStream<Result>.makeStream(bufferingPolicy: .bufferingNewest(1))
+    let timeoutTask = Task { [weak self] in
+      try? await Task.sleep(for: timeout)
+      guard !Task.isCancelled, let self else { return }
+      if let request = await self.removeRequest(for: requestId) {
+        request.continuation.yield(.timedOut)
+        request.continuation.finish()
       }
+    }
+    // Install before returning the request ID or emitting CallAnsweredEvent.
+    pendingRequests[requestId] = PendingRequest(
+      id: requestId, callId: callId, createdAt: Date(),
+      continuation: continuation, timeoutTask: timeoutTask
+    )
+    let resultTask = Task<Result, Never> {
+      for await result in stream { return result }
+      return .cancelled
     }
 
     return (requestId, resultTask)
@@ -109,7 +91,8 @@ actor FulfillRequestManager {
     request.timeoutTask.cancel()
 
     Log.call.debug("Fulfill request succeeded - requestId: \(requestId), callId: \(request.callId)")
-    request.continuation.resume(returning: .fulfilled(callId: request.callId))
+    request.continuation.yield(.fulfilled(callId: request.callId))
+    request.continuation.finish()
     return request.callId
   }
 
@@ -125,7 +108,17 @@ actor FulfillRequestManager {
 
     request.timeoutTask.cancel()
     Log.call.debug("Fulfill request cancelled - requestId: \(requestId)")
-    request.continuation.resume(returning: .cancelled)
+    request.continuation.yield(.cancelled)
+    request.continuation.finish()
+  }
+
+  func callId(for requestId: UUID) -> UUID? {
+    pendingRequests[requestId]?.callId
+  }
+
+  func cancel(callId: UUID) {
+    let ids = pendingRequests.values.filter { $0.callId == callId }.map { $0.id }
+    for id in ids { cancel(requestId: id) }
   }
 
   /// Cancels all pending requests.
@@ -138,15 +131,12 @@ actor FulfillRequestManager {
     for (id, request) in requests {
       request.timeoutTask.cancel()
       Log.call.debug("Fulfill request cancelled (cancelAll) - requestId: \(id)")
-      request.continuation.resume(returning: .cancelled)
+      request.continuation.yield(.cancelled)
+      request.continuation.finish()
     }
   }
 
   // MARK: - Private Helpers
-
-  private func addRequest(_ request: PendingRequest) {
-    pendingRequests[request.id] = request
-  }
 
   private func removeRequest(for requestId: UUID) -> PendingRequest? {
     pendingRequests.removeValue(forKey: requestId)

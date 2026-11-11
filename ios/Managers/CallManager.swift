@@ -1,18 +1,6 @@
 import CallKit
 import os
 
-/// Errors that can occur during call operations.
-enum CallError: LocalizedError {
-  case sessionAlreadyExists
-
-  var errorDescription: String? {
-    switch self {
-    case .sessionAlreadyExists:
-      return "A call session already exists"
-    }
-  }
-}
-
 /// Manages CallKit integration for VoIP calls.
 ///
 /// Handles the lifecycle of calls including starting outgoing calls,
@@ -24,10 +12,10 @@ class CallManager: NSObject {
   private let callController = CXCallController()
   private let provider: CXProvider
 
-  private let supportsHolding = false
+  private let supportsHolding = true
   private let supportsGrouping = false
   private let supportsUngrouping = false
-  private let supportsDTMF = false
+  private let supportsDTMF = true
 
   /// Timeout duration for outgoing calls to connect.
   static let outgoingCallTimeout: Duration = {
@@ -56,7 +44,8 @@ class CallManager: NSObject {
   private override init() {
     let configuration = CXProviderConfiguration()
     configuration.supportsVideo = true
-    configuration.maximumCallGroups = 1
+    // Two independent calls allow an active consultation call and a held call.
+    configuration.maximumCallGroups = 2
     configuration.maximumCallsPerCallGroup = 1
     configuration.supportedHandleTypes = [.phoneNumber, .generic]
     configuration.includesCallsInRecents =
@@ -77,6 +66,30 @@ class CallManager: NSObject {
     super.init()
 
     provider.setDelegate(self, queue: nil)
+  }
+
+  /// Restore shared audio only after the last call has gone away.
+  func restoreAudioSessionIfIdle() async {
+    let calls = await store.allSessions
+    if calls.isEmpty && !AudioManager.shared.isActive {
+      AudioManager.shared.restoreAudioSession()
+    }
+  }
+
+  /// Ringback belongs to the unheld outgoing call, not the first stored call.
+  func refreshDialtone() async {
+    let calls = await store.allSessions
+    let shouldPlay = calls.contains {
+      ($0.origin == .outgoingApp || $0.origin == .outgoingSystem)
+        && $0.status == .connecting && !$0.isOnHold
+    }
+    await MainActor.run {
+      if shouldPlay {
+        DialtonePlayer.shared.play()
+      } else {
+        DialtonePlayer.shared.stop()
+      }
+    }
   }
 
   // MARK: - Call Timeout
@@ -105,9 +118,6 @@ class CallManager: NSObject {
       self.removeTimeoutTask(for: id)
 
       Log.call.debug("Call timeout expired - id: \(id)")
-
-      // Stop the dialtone (for outgoing calls)
-      DialtonePlayer.shared.stop()
 
       // End the call due to timeout
       await reportCallEnded(for: id, reason: .unanswered)
@@ -216,12 +226,6 @@ class CallManager: NSObject {
     options: CallOptions,
     isAppInitiated: Bool = true
   ) async throws -> UUID {
-    // Guard against starting a new call while one is already active
-    if let existingSession = await store.firstSession {
-      Log.call.warning("Cannot start outgoing call - session already exists: \(existingSession.id)")
-      throw CallError.sessionAlreadyExists
-    }
-
     // Prepare audio session before starting the call
     AudioManager.shared.prepareAudioSessionForCall(hasVideo: options.hasVideo)
 
@@ -246,7 +250,12 @@ class CallManager: NSObject {
     let startCallAction = CXStartCallAction(call: id, handle: handle)
     startCallAction.isVideo = options.hasVideo
 
-    let transaction = CXTransaction(action: startCallAction)
+    let transaction = CXTransaction()
+    let existingCalls = await store.allSessions
+    for call in existingCalls where call.id != id && call.status == .connected && !call.isOnHold {
+      transaction.addAction(CXSetHeldCallAction(call: call.id, onHold: true))
+    }
+    transaction.addAction(startCallAction)
 
     do {
       try await withCheckedThrowingContinuation {
@@ -265,7 +274,7 @@ class CallManager: NSObject {
         "Outgoing call request rejected by CallKit - id: \(id), error: \(error.localizedDescription)"
       )
       await store.remove(for: id)
-      AudioManager.shared.restoreAudioSession()
+      await restoreAudioSessionIfIdle()
       throw error
     }
 
@@ -281,8 +290,11 @@ class CallManager: NSObject {
   ///
   /// - Parameter event: The incoming call event containing caller info.
   /// - Throws: An error if CallKit rejects the incoming call report.
-  func reportIncomingCall(event: IncomingCallEvent) async throws {
+  @discardableResult
+  func reportIncomingCall(event: IncomingCallEvent) async throws -> UUID {
+    if let existing = existingPushCallId(event: event) { return existing }
     let id = UUID()
+    registerIncomingCall(id: id, event: event)
     Log.call.debug("Reporting incoming call - id: \(id)")
 
     // Prepare audio session before reporting to CallKit
@@ -333,6 +345,10 @@ class CallManager: NSObject {
       Log.call.debug("Incoming call reported to CallKit - id: \(id)")
 
       await store.add(session)
+      guard IncomingCallRegistry.shared.validate(id: id) else {
+        await reportCallEnded(for: id, reason: .unanswered)
+        return id
+      }
 
       // Notify JS that an incoming call has been reported to CallKit
       await MainActor.run {
@@ -340,12 +356,14 @@ class CallManager: NSObject {
       }
 
       // Start timeout for incoming call
-      startCallTimeout(for: id, timeout: Self.incomingCallTimeout)
+      scheduleIncomingTimeout(for: id)
+      return id
     } catch {
       Log.call.error(
         "Failed to report incoming call to CallKit - id: \(id), error: \(error.localizedDescription)"
       )
-      AudioManager.shared.restoreAudioSession()
+      IncomingCallRegistry.shared.end(id: id)
+      await restoreAudioSessionIfIdle()
       throw error
     }
   }
@@ -359,7 +377,21 @@ class CallManager: NSObject {
   ///   - event: The incoming call event containing caller info.
   ///   - completion: Called when the CallKit report completes (success or failure).
   func reportIncomingCall(event: IncomingCallEvent, completion: @escaping (Error?) -> Void) {
+    if let existing = existingPushCallId(event: event) {
+      // Still report each VoIP push to CallKit, using the original UUID and deadline.
+      let update = CXCallUpdate()
+      update.remoteHandle = CXHandle(type: .generic, value: event.caller.id)
+      update.localizedCallerName = event.caller.displayName
+      provider.reportNewIncomingCall(with: existing, update: update) { [weak self] _ in
+        if !IncomingCallRegistry.shared.validate(id: existing) {
+          self?.provider.reportCall(with: existing, endedAt: Date(), reason: .unanswered)
+        }
+        completion(nil)
+      }
+      return
+    }
     let id = UUID()
+    registerIncomingCall(id: id, event: event)
     Log.call.debug("Reporting incoming call (sync) - id: \(id)")
 
     // Pre-heat audio session before reporting to CallKit
@@ -402,7 +434,8 @@ class CallManager: NSObject {
         Log.call.error(
           "Failed to report incoming call to CallKit - id: \(id), error: \(error.localizedDescription)"
         )
-        AudioManager.shared.restoreAudioSession()
+        IncomingCallRegistry.shared.end(id: id)
+        Task { await self?.restoreAudioSessionIfIdle() }
         completion(error)
         return
       }
@@ -412,16 +445,52 @@ class CallManager: NSObject {
       // Now do the async work (store session, emit events, start timeout)
       Task {
         await self?.store.add(session)
+        guard IncomingCallRegistry.shared.validate(id: id) else {
+          await self?.reportCallEnded(for: id, reason: .unanswered)
+          completion(nil)
+          return
+        }
 
         await MainActor.run {
           CallEventEmitter.shared.send(IncomingCallReportedEvent(id: id))
         }
 
-        self?.startCallTimeout(for: id, timeout: Self.incomingCallTimeout)
+        self?.scheduleIncomingTimeout(for: id)
+        completion(nil)
       }
-
-      completion(nil)
     }
+  }
+
+  private func existingPushCallId(event: IncomingCallEvent) -> UUID? {
+    guard event.metadata?["incomingSource"] as? String == "push",
+          event.metadata?["pushHasCallId"] as? Bool != false else { return nil }
+    return IncomingCallRegistry.shared.existingPushId(
+      serverCallId: event.serverCallId, accountId: event.metadata?["accountId"] as? String
+    )
+  }
+
+  private func scheduleIncomingTimeout(for id: UUID) {
+    guard let remaining = IncomingCallRegistry.shared.ringingTimeRemaining(id: id) else { return }
+    startCallTimeout(for: id, timeout: .milliseconds(Int64(remaining * 1000)))
+  }
+
+  /// Register synchronously before reporting to CallKit: SIP may arrive before its callback.
+  private func registerIncomingCall(id: UUID, event: IncomingCallEvent) {
+    let now = Date()
+    let seconds = Bundle.main.object(forInfoDictionaryKey: "ExpoCallKitTelecomIncomingCallTimeout") as? Int ?? 45
+    var deadline = now.addingTimeInterval(TimeInterval(seconds))
+    if let raw = event.metadata?["expiresAt"] as? String,
+       let expiry = IncomingCallEventParser.parseRFC3339Date(raw) {
+      deadline = min(deadline, expiry)
+    }
+    let isPush = event.metadata?["incomingSource"] as? String == "push"
+    let hasCallId = !isPush || event.metadata?["pushHasCallId"] as? Bool != false
+    IncomingCallRegistry.shared.register(
+      id: id, serverCallId: hasCallId ? event.serverCallId : nil,
+      handle: event.caller.phoneNumber ?? event.caller.email ?? event.caller.id,
+      accountId: event.metadata?["accountId"] as? String, isPush: isPush,
+      receivedAt: now, ringingDeadline: deadline
+    )
   }
 
   // MARK: - Answer Call
@@ -467,11 +536,14 @@ class CallManager: NSObject {
   /// - Returns: Whether the request was successfully fulfilled.
   @discardableResult
   func fulfillIncomingCall(requestId: UUID) async -> Bool {
-    guard let callId = await FulfillRequestManager.shared.fulfill(requestId: requestId) else {
+    guard let pendingCallId = await FulfillRequestManager.shared.callId(for: requestId),
+          IncomingCallRegistry.shared.validate(id: pendingCallId, answering: true),
+          let callId = await FulfillRequestManager.shared.fulfill(requestId: requestId) else {
       Log.call.debug("Incoming call request not found (timed out) - requestId: \(requestId)")
       return false
     }
 
+    IncomingCallRegistry.shared.connected(id: callId)
     // Update status and connectedAt in a single event
     await store.update(for: callId) { session in
       session.status = .connected
@@ -506,7 +578,6 @@ class CallManager: NSObject {
     Log.call.debug("Reporting outgoing call connected - id: \(id)")
 
     // Stop dialtone and cancel timeout
-    DialtonePlayer.shared.stop()
     cancelCallTimeout(for: id)
 
     let now = Date()
@@ -515,6 +586,7 @@ class CallManager: NSObject {
       session.status = .connected
       session.connectedAt = now
     }
+    await refreshDialtone()
   }
 
   // MARK: - End Call
@@ -564,9 +636,10 @@ class CallManager: NSObject {
     Log.call.debug("Reporting call ended - id: \(id), reason: \(reason.rawValue)")
 
     // Stop dialtone and cancel timeout (in case call ended before connecting)
-    DialtonePlayer.shared.stop()
     cancelCallTimeout(for: id)
 
+    IncomingCallRegistry.shared.end(id: id)
+    await FulfillRequestManager.shared.cancel(callId: id)
     provider.reportCall(with: id, endedAt: Date(), reason: reason)
 
     // Snapshot the session as ended so the embedded session reflects the terminal state.
@@ -579,6 +652,8 @@ class CallManager: NSObject {
     }
 
     await store.remove(for: id)
+    await refreshDialtone()
+    await restoreAudioSessionIfIdle()
   }
 
   // MARK: - Mute Support

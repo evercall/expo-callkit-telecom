@@ -1,52 +1,25 @@
 package expo.modules.callkittelecom
 
+import com.facebook.react.bridge.ReactContext
+import com.oney.WebRTCModule.ExpoCallKitDtmfBridge
+import expo.modules.kotlin.Promise
 import expo.modules.callkittelecom.events.CallEventEmitter
 import expo.modules.callkittelecom.events.CallEvents
 import expo.modules.callkittelecom.managers.CallAudioManager
-import expo.modules.callkittelecom.managers.CallManager
 import expo.modules.callkittelecom.managers.CaptureSessionManager
 import expo.modules.callkittelecom.managers.VoIPPushManager
 import expo.modules.callkittelecom.models.CallEndedReason
 import expo.modules.callkittelecom.models.CallOptions
 import expo.modules.callkittelecom.models.CallParticipant
 import expo.modules.callkittelecom.models.IncomingCallEvent
-import expo.modules.callkittelecom.services.CallNotificationReceiver
 import expo.modules.callkittelecom.store.CallStore
+import expo.modules.callkittelecom.push.PushPayloadProfileStore
+import expo.modules.callkittelecom.telecom.ManagedCallManager
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 import java.util.UUID
 
 class ExpoCallKitTelecomModule : Module() {
-    /**
-     * Checks the current activity's launch intent for ACTION_ANSWER.
-     *
-     * On cold start from a notification answer action, the intent is delivered to onCreate() — not
-     * onNewIntent() — so OnNewIntent never fires. This method handles that case by checking the
-     * launch intent directly.
-     */
-    private fun handleLaunchIntent() {
-        val intent = appContext.currentActivity?.intent ?: return
-        handleAnswerIntent(intent)
-    }
-
-    /** Extracts the call ID from an ACTION_ANSWER intent and answers the call. */
-    private fun handleAnswerIntent(intent: android.content.Intent) {
-        if (intent.action != CallNotificationReceiver.ACTION_ANSWER) return
-
-        val callIdStr = intent.getStringExtra(CallNotificationReceiver.EXTRA_CALL_ID) ?: return
-        val callId =
-            try {
-                UUID.fromString(callIdStr)
-            } catch (_: IllegalArgumentException) {
-                return
-            }
-
-        // Clear the action so it isn't re-processed on configuration changes
-        intent.action = null
-
-        CallManager.shared.answerCall(callId)
-    }
-
     override fun definition() = ModuleDefinition {
         Name("ExpoCallKitTelecom")
 
@@ -79,22 +52,15 @@ class ExpoCallKitTelecomModule : Module() {
         OnCreate {
             val context = appContext.reactContext ?: return@OnCreate
 
-            CallManager.shared.initialize(context)
+            ManagedCallManager.shared.initialize(context)
 
             VoIPPushManager.register()
 
             CallEventEmitter.setSender { eventName, body -> sendEvent(eventName, body) }
 
-            // Handle the launch intent for cold-start answer actions.
-            // OnNewIntent only fires when the activity is already running.
-            // On cold start the ACTION_ANSWER intent is the launch intent,
-            // so we must check it here.
-            handleLaunchIntent()
         }
 
         OnDestroy { CallEventEmitter.setSender(null) }
-
-        OnNewIntent { intent -> handleAnswerIntent(intent) }
 
         // Register per-event observers
         OnStartObserving(CallEvents.CALL_SESSION_ADDED) {
@@ -214,14 +180,38 @@ class ExpoCallKitTelecomModule : Module() {
 
         // endregion
 
+        // region Android Phone Account
+
+        Function("registerAndroidPhoneAccount") {
+            ManagedCallManager.shared.registerPhoneAccount()
+        }
+
+        Function("isAndroidPhoneAccountEnabled") {
+            ManagedCallManager.shared.isPhoneAccountEnabled()
+        }
+
+        Function("openAndroidPhoneAccountSettings") {
+            ManagedCallManager.shared.openPhoneAccountSettings()
+        }
+
+        // endregion
+
         // region Call Session
 
         // Returns the first active call session, if present.
         AsyncFunction("getActiveCallSession") { CallStore.firstSession()?.toMap() }
+        AsyncFunction("getCallSessions") { CallStore.allSessions().map { it.toMap() } }
+        AsyncFunction("getCallSession") { id: String -> CallStore.session(UUID.fromString(id))?.toMap() }
 
         // endregion
 
         // region Audio Session
+
+        Function("getAudioDevices") { direction: String -> CallAudioManager.getAudioDevices(direction) }
+
+        AsyncFunction("setAudioDevice") { callId: String, direction: String, id: String, promise: Promise ->
+            CallAudioManager.setAudioDevice(UUID.fromString(callId), direction, id, promise)
+        }
 
         // Returns current audio session snapshot for diagnostics/UI state.
         Function("getAudioSessionState") { CallAudioManager.getAudioSessionState() }
@@ -255,7 +245,7 @@ class ExpoCallKitTelecomModule : Module() {
             recipient: Map<String, Any?>,
             options: Map<String, Any?> ->
             val callId =
-                CallManager.shared.startOutgoingCall(
+                ManagedCallManager.shared.startOutgoingCall(
                     recipient = CallParticipant.fromMap(recipient),
                     options = CallOptions(hasVideo = options["hasVideo"] as? Boolean ?: false),
                 )
@@ -268,7 +258,7 @@ class ExpoCallKitTelecomModule : Module() {
 
         // Reports an incoming call to Telecom from app/push events.
         AsyncFunction("reportIncomingCall") { event: Map<String, Any?> ->
-            CallManager.shared.reportIncomingCall(IncomingCallEvent.fromMap(event))
+            ManagedCallManager.shared.reportIncomingCall(IncomingCallEvent.fromMap(event))
         }
 
         // endregion
@@ -277,17 +267,17 @@ class ExpoCallKitTelecomModule : Module() {
 
         // Answers an existing incoming call session.
         AsyncFunction("answerCall") { id: String ->
-            CallManager.shared.answerCall(UUID.fromString(id))
+            ManagedCallManager.shared.answerCall(UUID.fromString(id))
         }
 
         // Fulfills pending incoming-call answer once media is connected.
         AsyncFunction("fulfillIncomingCallAnswered") { requestId: String ->
-            CallManager.shared.fulfillIncomingCallConnected(UUID.fromString(requestId))
+            ManagedCallManager.shared.fulfillIncomingCallConnected(UUID.fromString(requestId))
         }
 
         // Reports outgoing call media connection established.
         AsyncFunction("reportOutgoingCallConnected") { id: String ->
-            CallManager.shared.reportOutgoingCallConnected(UUID.fromString(id))
+            ManagedCallManager.shared.reportOutgoingCallConnected(UUID.fromString(id))
         }
 
         // endregion
@@ -295,11 +285,11 @@ class ExpoCallKitTelecomModule : Module() {
         // region End Call
 
         // Ends an active call.
-        AsyncFunction("endCall") { id: String -> CallManager.shared.endCall(UUID.fromString(id)) }
+        AsyncFunction("endCall") { id: String -> ManagedCallManager.shared.endCall(UUID.fromString(id)) }
 
         // Reports an externally-ended call with explicit reason.
         AsyncFunction("reportCallEnded") { id: String, reason: String ->
-            CallManager.shared.reportCallEnded(
+            ManagedCallManager.shared.reportCallEnded(
                 UUID.fromString(id),
                 CallEndedReason.fromValue(reason),
             )
@@ -311,7 +301,7 @@ class ExpoCallKitTelecomModule : Module() {
 
         // Sets mute state for a call.
         AsyncFunction("setMuted") { id: String, muted: Boolean ->
-            CallManager.shared.setMuted(UUID.fromString(id), muted)
+            ManagedCallManager.shared.setMuted(UUID.fromString(id), muted)
         }
 
         // endregion
@@ -320,7 +310,7 @@ class ExpoCallKitTelecomModule : Module() {
 
         // Reports call video enabled state changes.
         AsyncFunction("reportVideo") { id: String, enabled: Boolean ->
-            CallManager.shared.reportVideo(UUID.fromString(id), enabled)
+            ManagedCallManager.shared.reportVideo(UUID.fromString(id), enabled)
         }
 
         // endregion
@@ -329,21 +319,76 @@ class ExpoCallKitTelecomModule : Module() {
 
         // Sets call hold state.
         AsyncFunction("setHeld") { id: String, onHold: Boolean ->
-            CallManager.shared.setHeld(UUID.fromString(id), onHold)
+            ManagedCallManager.shared.setHeld(UUID.fromString(id), onHold)
         }
 
         // endregion
 
         // region DTMF Support
 
+        // Observe queue processing, without exposing DTMF digits to JavaScript logs.
+        AsyncFunction("getRtpDtmfState") { peerConnectionId: Int, senderId: String, promise: Promise ->
+            val context = appContext.reactContext as? ReactContext
+            if (context == null) {
+                promise.reject("ERR_RTP_DTMF", "React context is unavailable", null)
+            } else {
+                ExpoCallKitDtmfBridge.inspect(context, peerConnectionId, senderId,
+                    object : ExpoCallKitDtmfBridge.StateResult {
+                        override fun onSuccess(remainingSymbols: Int, canInsert: Boolean, audioTrackEnabled: Boolean,
+                                               durationMs: Int, interToneGapMs: Int) {
+                            promise.resolve(mapOf(
+                                "remainingSymbols" to remainingSymbols,
+                                "canInsert" to canInsert,
+                                "audioTrackEnabled" to audioTrackEnabled,
+                                "durationMs" to durationMs,
+                                "interToneGapMs" to interToneGapMs,
+                            ))
+                        }
+                        override fun onFailure(error: Exception) {
+                            promise.reject("ERR_RTP_DTMF", error.message, error)
+                        }
+                    },
+                )
+            }
+        }
+
+        // Inserts RFC2833/telephone-event tones into the existing SIP audio stream.
+        AsyncFunction("sendRtpDtmf") { peerConnectionId: Int, senderId: String, tones: String, promise: Promise ->
+            // Expo exposes this as Context even though its main runtime holds a
+            // ReactApplicationContext. Narrow safely before accessing WebRTC.
+            val context = appContext.reactContext as? ReactContext
+            if (context == null) {
+                promise.reject("ERR_RTP_DTMF", "React context is unavailable", null)
+            } else {
+                ExpoCallKitDtmfBridge.send(context, peerConnectionId, senderId, tones,
+                    object : ExpoCallKitDtmfBridge.Result {
+                        override fun onSuccess() { promise.resolve(null) }
+                        override fun onFailure(error: Exception) {
+                            promise.reject("ERR_RTP_DTMF", error.message, error)
+                        }
+                    },
+                )
+            }
+        }
+
         // Sends requested DTMF digits for a call.
         AsyncFunction("playDTMF") { id: String, digits: String ->
-            CallManager.shared.playDTMF(UUID.fromString(id), digits)
+            ManagedCallManager.shared.playDTMF(UUID.fromString(id), digits)
         }
 
         // endregion
 
         // region VoIP Push
+
+        Function("configurePushPayloadProfiles") { profilesJson: String ->
+            val context = appContext.reactContext ?: return@Function
+            PushPayloadProfileStore.save(context, profilesJson)
+        }
+
+        Function("getPushPayloadProfilesJson") {
+            val context = appContext.reactContext ?: return@Function null
+            PushPayloadProfileStore.read(context)
+        }
 
         // Registers for VoIP push by fetching the FCM token.
         Function("registerVoIPPush") { VoIPPushManager.register() }

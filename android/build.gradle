@@ -18,7 +18,17 @@ android {
 }
 
 dependencies {
-  implementation "androidx.core:core-telecom:1.0.1"
+  compileOnly "com.facebook.react:react-android"
+  // The bridge shares WebRTC's package and executor; the app autolinks this peer.
+  def webRtcProject = rootProject.subprojects.find {
+    new File(it.projectDir, 'src/main/java/com/oney/WebRTCModule/WebRTCModule.java').isFile()
+  }
+  if (webRtcProject == null) {
+    throw new GradleException("expo-callkit-telecom requires the autolinked @livekit/react-native-webrtc Android project")
+  }
+  compileOnly project(path: webRtcProject.path)
+  compileOnly 'io.github.webrtc-sdk:android:144.7559.05'
+
   implementation "com.google.firebase:firebase-messaging:24.1.0"
 
   // expo-notifications may be included as a source project or as a prebuilt

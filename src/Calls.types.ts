@@ -18,10 +18,10 @@ export type PushTokenType = "APNS_VOIP" | "FCM";
  * @category Core
  */
 export interface NativeEventMeta {
-  /** Whether the event was flushed from queue (true) or sent in real-time (false) */
-  flushed: boolean;
-  /** ISO8601 timestamp of when the event was created */
-  timestamp: string;
+	/** Whether the event was flushed from queue (true) or sent in real-time (false) */
+	flushed: boolean;
+	/** ISO8601 timestamp of when the event was created */
+	timestamp: string;
 }
 
 /**
@@ -30,7 +30,7 @@ export interface NativeEventMeta {
  * @category Core
  */
 export interface NativeEvent {
-  meta: NativeEventMeta;
+	meta: NativeEventMeta;
 }
 
 // ============================================================================
@@ -47,16 +47,16 @@ export interface NativeEvent {
  * @category Sessions
  */
 export interface CallSession {
-  id: string;
-  options: CallOptions;
-  origin: CallSessionOrigin;
-  remoteParticipants: CallParticipant[];
-  incomingCallEvent?: IncomingCallEvent;
-  status: CallSessionStatus;
-  connectedAt?: string;
-  isMuted: boolean;
-  isOnHold: boolean;
-  dtmfDigits?: string;
+	id: string;
+	options: CallOptions;
+	origin: CallSessionOrigin;
+	remoteParticipants: CallParticipant[];
+	incomingCallEvent?: IncomingCallEvent;
+	status: CallSessionStatus;
+	connectedAt?: string;
+	isMuted: boolean;
+	isOnHold: boolean;
+	dtmfDigits?: string;
 }
 
 /**
@@ -65,7 +65,7 @@ export interface CallSession {
  * @category Sessions
  */
 export interface CallOptions {
-  hasVideo: boolean;
+	hasVideo: boolean;
 }
 
 /**
@@ -85,17 +85,17 @@ export type CallSessionOrigin = "incoming" | "outgoingApp" | "outgoingSystem";
  * @category Sessions
  */
 export interface CallParticipant {
-  /** Opaque, stable app identifier for this participant. */
-  id: string;
-  /** Display name. */
-  displayName?: string;
-  /** Avatar URL. */
-  avatarUrl?: string;
-  /** Phone number in E.164 (e.g. "+14155551234"). When present on iOS, the
-   *  CallKit handle is set to this number, enabling Recents and Siri. */
-  phoneNumber?: string;
-  /** Email address. */
-  email?: string;
+	/** Opaque, stable app identifier for this participant. */
+	id: string;
+	/** Display name. */
+	displayName?: string;
+	/** Avatar URL. */
+	avatarUrl?: string;
+	/** Phone number in E.164 (e.g. "+14155551234"). When present on iOS, the
+	 *  CallKit handle is set to this number, enabling Recents and Siri. */
+	phoneNumber?: string;
+	/** Email address. */
+	email?: string;
 }
 
 /**
@@ -118,11 +118,11 @@ export interface CallParticipant {
  * @category Sessions
  */
 export type CallSessionStatus =
-  | "requesting"
-  | "connecting"
-  | "ringing"
-  | "connected"
-  | "ended";
+	| "requesting"
+	| "connecting"
+	| "ringing"
+	| "connected"
+	| "ended";
 
 /**
  * Fired when a new {@link CallSession} is created (outgoing request or incoming report).
@@ -130,7 +130,7 @@ export type CallSessionStatus =
  * @category Sessions
  */
 export interface CallSessionAddedEvent extends NativeEvent {
-  session: CallSession;
+	session: CallSession;
 }
 
 /**
@@ -139,7 +139,7 @@ export interface CallSessionAddedEvent extends NativeEvent {
  * @category Sessions
  */
 export interface CallSessionUpdatedEvent extends NativeEvent {
-  session: CallSession;
+	session: CallSession;
 }
 
 /**
@@ -148,7 +148,7 @@ export interface CallSessionUpdatedEvent extends NativeEvent {
  * @category Sessions
  */
 export interface CallSessionRemovedEvent extends NativeEvent {
-  id: string;
+	id: string;
 }
 
 // ============================================================================
@@ -162,11 +162,11 @@ export interface CallSessionRemovedEvent extends NativeEvent {
  * @category Permissions
  */
 export type PermissionStatus =
-  | "granted"
-  | "denied"
-  | "undetermined"
-  | "restricted"
-  | "unknown";
+	| "granted"
+	| "denied"
+	| "undetermined"
+	| "restricted"
+	| "unknown";
 
 // ============================================================================
 // Audio session
@@ -179,28 +179,28 @@ export type PermissionStatus =
  * @category Audio
  */
 export interface AudioSession {
-  isActive: boolean;
-  /** iOS only: whether the WebRTC RTCAudioSession is active. */
-  rtcSessionIsActive?: boolean;
-  /** iOS only: whether the AVAudioSession is active. */
-  avSessionIsActive?: boolean;
-  /** iOS only: whether the RTCAudioSession audio track is enabled. */
-  isAudioEnabled?: boolean;
-  /** iOS only: whether manual audio mode is enabled on RTCAudioSession. */
-  useManualAudio?: boolean;
-  isOtherAudioPlaying: boolean;
-  category: string;
-  mode: string;
-  /** iOS only: AVAudioSession category options. */
-  categoryOptions?: string[];
-  sampleRate: number;
-  ioBufferDuration: number;
-  inputNumberOfChannels: number;
-  outputNumberOfChannels: number;
-  microphonePermission: PermissionStatus;
-  currentRoute: AudioRoute;
-  /** Available audio output devices. Populated on Android; undefined on iOS. */
-  availableRoutes?: AudioPort[];
+	isActive: boolean;
+	/** iOS only: whether the WebRTC RTCAudioSession is active. */
+	rtcSessionIsActive?: boolean;
+	/** iOS only: whether the AVAudioSession is active. */
+	avSessionIsActive?: boolean;
+	/** iOS only: whether the RTCAudioSession audio track is enabled. */
+	isAudioEnabled?: boolean;
+	/** iOS only: whether manual audio mode is enabled on RTCAudioSession. */
+	useManualAudio?: boolean;
+	isOtherAudioPlaying: boolean;
+	category: string;
+	mode: string;
+	/** iOS only: AVAudioSession category options. */
+	categoryOptions?: string[];
+	sampleRate: number;
+	ioBufferDuration: number;
+	inputNumberOfChannels: number;
+	outputNumberOfChannels: number;
+	microphonePermission: PermissionStatus;
+	currentRoute: AudioRoute;
+	/** Available audio output devices. Populated on Android; undefined on iOS. */
+	availableRoutes?: AudioPort[];
 }
 
 /**
@@ -209,8 +209,8 @@ export interface AudioSession {
  * @category Audio
  */
 export interface AudioRoute {
-  inputs: AudioPort[];
-  outputs: AudioPort[];
+	inputs: AudioPort[];
+	outputs: AudioPort[];
 }
 
 /**
@@ -219,9 +219,9 @@ export interface AudioRoute {
  * @category Audio
  */
 export interface AudioPort {
-  portType: AudioOutputPortType;
-  portName: string;
-  uid: string;
+	portType: AudioOutputPortType;
+	portName: string;
+	uid: string;
 }
 
 /**
@@ -231,18 +231,18 @@ export interface AudioPort {
  * @category Audio
  */
 export type AudioOutputPortType =
-  | "builtInReceiver" // Earpiece
-  | "builtInSpeaker" // Speaker
-  | "headphones" // Wired headphones
-  | "bluetoothA2DP" // Bluetooth A2DP audio
-  | "bluetoothLE" // Bluetooth Low Energy audio
-  | "bluetoothHFP" // Bluetooth Hands-Free Profile
-  | "airPlay" // AirPlay
-  | "hdmi" // HDMI output
-  | "carAudio" // CarPlay
-  | "usbAudio" // USB audio
-  | "lineOut" // Line out
-  | (string & {}); // Allow other unknown port types
+	| "builtInReceiver" // Earpiece
+	| "builtInSpeaker" // Speaker
+	| "headphones" // Wired headphones
+	| "bluetoothA2DP" // Bluetooth A2DP audio
+	| "bluetoothLE" // Bluetooth Low Energy audio
+	| "bluetoothHFP" // Bluetooth Hands-Free Profile
+	| "airPlay" // AirPlay
+	| "hdmi" // HDMI output
+	| "carAudio" // CarPlay
+	| "usbAudio" // USB audio
+	| "lineOut" // Line out
+	| (string & {}); // Allow other unknown port types
 
 /**
  * Brief summary of one call associated with an audio-session activation event.
@@ -250,8 +250,8 @@ export type AudioOutputPortType =
  * @category Audio Events
  */
 export interface AudioSessionCallInfo {
-  id: string;
-  status: CallSessionStatus;
+	id: string;
+	status: CallSessionStatus;
 }
 
 /**
@@ -260,7 +260,7 @@ export interface AudioSessionCallInfo {
  * @category Audio Events
  */
 export interface AudioSessionActivatedEvent extends NativeEvent {
-  calls: AudioSessionCallInfo[];
+	calls: AudioSessionCallInfo[];
 }
 
 /**
@@ -269,7 +269,7 @@ export interface AudioSessionActivatedEvent extends NativeEvent {
  * @category Audio Events
  */
 export interface AudioSessionDeactivatedEvent extends NativeEvent {
-  calls: AudioSessionCallInfo[];
+	calls: AudioSessionCallInfo[];
 }
 
 /**
@@ -278,9 +278,9 @@ export interface AudioSessionDeactivatedEvent extends NativeEvent {
  * @category Audio Events
  */
 export interface AudioRouteChangedEvent extends NativeEvent {
-  currentRoute: AudioRoute;
-  /** Available audio output devices. Populated on Android; undefined on iOS. */
-  availableRoutes?: AudioPort[];
+	currentRoute: AudioRoute;
+	/** Available audio output devices. Populated on Android; undefined on iOS. */
+	availableRoutes?: AudioPort[];
 }
 
 // ============================================================================
@@ -294,9 +294,9 @@ export interface AudioRouteChangedEvent extends NativeEvent {
  * @category Capture
  */
 export interface CaptureSession {
-  cameraPermission: PermissionStatus;
-  /** Whether the device supports multitasking camera access (iOS 16+). */
-  isMultitaskingCameraAccessSupported?: boolean;
+	cameraPermission: PermissionStatus;
+	/** Whether the device supports multitasking camera access (iOS 16+). */
+	isMultitaskingCameraAccessSupported?: boolean;
 }
 
 // ============================================================================
@@ -309,7 +309,7 @@ export interface CaptureSession {
  * @category Call Events
  */
 export interface CallActionEvent extends NativeEvent {
-  id: string;
+	id: string;
 }
 
 /**
@@ -325,7 +325,7 @@ export interface CallActionEvent extends NativeEvent {
  * @category Call Events
  */
 export interface WithSession {
-  session: CallSession;
+	session: CallSession;
 }
 
 /**
@@ -333,7 +333,8 @@ export interface WithSession {
  *
  * @category Call Events
  */
-export interface OutgoingCallStartedEvent extends CallActionEvent {}
+export interface OutgoingCallStartedEvent extends CallActionEvent {
+}
 
 /**
  * Payload describing one incoming call.
@@ -344,26 +345,26 @@ export interface OutgoingCallStartedEvent extends CallActionEvent {}
  * @category VoIP Push
  */
 export interface IncomingCallEvent {
-  /** Unique event identifier (UUID). Used for dedup. */
-  eventId: string;
-  /** Your backend's id for this call. Distinct from {@link CallSession.id},
-   *  which is the OS-assigned native call UUID. Use this id to talk to your
-   *  server about the call (e.g. POST /calls/:serverCallId/answer). */
-  serverCallId: string;
-  /** True for video calls, false for audio. */
-  hasVideo: boolean;
-  /** RFC 3339 timestamp of when the call was placed. Optional; defaults to now. */
-  startedAt?: string;
-  /** Caller identity and addressing. */
-  caller: CallParticipant;
-  /**
-   * App-defined extra fields, forwarded verbatim from the push payload.
-   *
-   * The library treats this as opaque — put whatever your app needs here
-   * (chatId, tenantId, room name, etc.). Cast to your own type at the
-   * read site.
-   */
-  metadata?: Record<string, unknown>;
+	/** Unique event identifier (UUID). Used for dedup. */
+	eventId: string;
+	/** Your backend's id for this call. Distinct from {@link CallSession.id},
+	 *  which is the OS-assigned native call UUID. Use this id to talk to your
+	 *  server about the call (e.g. POST /calls/:serverCallId/answer). */
+	serverCallId: string;
+	/** True for video calls, false for audio. */
+	hasVideo: boolean;
+	/** RFC 3339 timestamp of when the call was placed. Optional; defaults to now. */
+	startedAt?: string;
+	/** Caller identity and addressing. */
+	caller: CallParticipant;
+	/**
+	 * App-defined extra fields, forwarded verbatim from the push payload.
+	 *
+	 * The library treats this as opaque — put whatever your app needs here
+	 * (chatId, tenantId, room name, etc.). Cast to your own type at the
+	 * read site.
+	 */
+	metadata?: Record<string, unknown>;
 }
 
 /**
@@ -371,7 +372,8 @@ export interface IncomingCallEvent {
  *
  * @category Call Events
  */
-export interface IncomingCallReportedEvent extends CallActionEvent {}
+export interface IncomingCallReportedEvent extends CallActionEvent {
+}
 
 /**
  * Fired when the user answers an incoming call from the system UI.
@@ -379,7 +381,7 @@ export interface IncomingCallReportedEvent extends CallActionEvent {}
  * @category Call Events
  */
 export interface CallAnsweredEvent extends CallActionEvent {
-  requestId: string;
+	requestId: string;
 }
 
 /**
@@ -387,7 +389,8 @@ export interface CallAnsweredEvent extends CallActionEvent {
  *
  * @category Call Events
  */
-export interface CallEndedEvent extends CallActionEvent, WithSession {}
+export interface CallEndedEvent extends CallActionEvent, WithSession {
+}
 
 /**
  * Reason a call was ended, reported on {@link CallReportedEnded}.
@@ -395,12 +398,12 @@ export interface CallEndedEvent extends CallActionEvent, WithSession {}
  * @category Call Events
  */
 export type CallEndedReason =
-  | "failed"
-  | "remoteEnded"
-  | "unanswered"
-  | "answeredElsewhere"
-  | "declinedElsewhere"
-  | "unknown";
+	| "failed"
+	| "remoteEnded"
+	| "unanswered"
+	| "answeredElsewhere"
+	| "declinedElsewhere"
+	| "unknown";
 
 /**
  * Fired when the app calls `reportCallEnded` to inform the OS the call has ended
@@ -409,7 +412,7 @@ export type CallEndedReason =
  * @category Call Events
  */
 export interface CallReportedEnded extends CallActionEvent, WithSession {
-  reason: CallEndedReason;
+	reason: CallEndedReason;
 }
 
 /**
@@ -419,7 +422,7 @@ export interface CallReportedEnded extends CallActionEvent, WithSession {
  * @category Call Events
  */
 export interface SetMutedActionEvent extends CallActionEvent {
-  isMuted: boolean;
+	isMuted: boolean;
 }
 
 /**
@@ -428,7 +431,7 @@ export interface SetMutedActionEvent extends CallActionEvent {
  * @category Call Events
  */
 export interface VideoChangedEvent extends CallActionEvent {
-  hasVideo: boolean;
+	hasVideo: boolean;
 }
 
 /**
@@ -437,7 +440,7 @@ export interface VideoChangedEvent extends CallActionEvent {
  * @category Call Events
  */
 export interface SetHeldActionEvent extends CallActionEvent {
-  isOnHold: boolean;
+	isOnHold: boolean;
 }
 
 /**
@@ -446,7 +449,7 @@ export interface SetHeldActionEvent extends CallActionEvent {
  * @category Call Events
  */
 export interface DTMFEvent extends CallActionEvent {
-  digits: string;
+	digits: string;
 }
 
 // ============================================================================
@@ -467,9 +470,11 @@ export type CallIntentHandleType = "phoneNumber" | "email" | "unknown";
  * @category Call Events
  */
 export interface CallIntentReceivedEvent extends NativeEvent {
-  handle: string;
-  handleType: CallIntentHandleType;
-  hasVideo: boolean;
+	/** Present when Android Telecom has already created the managed Connection. */
+	nativeCallId?: string;
+	handle: string;
+	handleType: CallIntentHandleType;
+	hasVideo: boolean;
 }
 
 // ============================================================================
@@ -482,10 +487,10 @@ export interface CallIntentReceivedEvent extends NativeEvent {
  * @category VoIP Push
  */
 export interface VoIPPushToken {
-  /** The VoIP push token string. */
-  token: string;
-  /** The type of token this platform provides. */
-  type: PushTokenType;
+	/** The VoIP push token string. */
+	token: string;
+	/** The type of token this platform provides. */
+	type: PushTokenType;
 }
 
 /**
@@ -494,8 +499,8 @@ export interface VoIPPushToken {
  * @category VoIP Push
  */
 export interface VoIPPushTokenUpdatedEvent extends NativeEvent {
-  /** The VoIP push token string, or undefined if invalidated */
-  token?: string;
-  /** The type of VoIP push token (e.g. "APNS_VOIP", "FCM"). */
-  type: PushTokenType;
+	/** The VoIP push token string, or undefined if invalidated */
+	token?: string;
+	/** The type of VoIP push token (e.g. "APNS_VOIP", "FCM"). */
+	type: PushTokenType;
 }

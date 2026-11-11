@@ -22,6 +22,9 @@ extension CallManager: CXProviderDelegate {
     Task {
       await FulfillRequestManager.shared.cancelAll()
       await store.removeAll()
+      if !AudioManager.shared.isActive {
+        AudioManager.shared.restoreAudioSession()
+      }
     }
   }
 
@@ -39,11 +42,16 @@ extension CallManager: CXProviderDelegate {
         let participant = session.remoteParticipants.first
       {
         let update = CXCallUpdate()
+        update.supportsHolding = true
+        update.supportsGrouping = false
+        update.supportsUngrouping = false
+        update.supportsDTMF = true
         setLocalizedCallerNameIfNeeded(for: participant, on: update)
         provider.reportCall(with: action.callUUID, updated: update)
       }
 
       await store.updateStatus(for: action.callUUID, status: .connecting)
+      await refreshDialtone()
 
       await MainActor.run {
         CallEventEmitter.shared.send(OutgoingCallStartedEvent(id: action.callUUID))
@@ -62,6 +70,12 @@ extension CallManager: CXProviderDelegate {
     cancelCallTimeout(for: action.callUUID)
 
     Task {
+      let seconds = Bundle.main.object(forInfoDictionaryKey: "ExpoCallKitTelecomFulfillAnswerCallTimeout") as? Int ?? 30
+      guard IncomingCallRegistry.shared.beginAnswer(id: action.callUUID, timeout: TimeInterval(seconds)) else {
+        action.fail()
+        await reportCallEnded(for: action.callUUID, reason: .unanswered)
+        return
+      }
       await store.updateStatus(for: action.callUUID, status: .connecting)
 
       // Create pending fulfill request with associated call ID
@@ -87,9 +101,11 @@ extension CallManager: CXProviderDelegate {
       case .cancelled:
         Log.call.debug("CXAnswerCallAction failed - cancelled - id: \(action.callUUID)")
         action.fail()
+        await reportCallEnded(for: action.callUUID, reason: .failed)
       case .timedOut:
         Log.call.debug("CXAnswerCallAction failed - timeout - id: \(action.callUUID)")
         action.fail()
+        await reportCallEnded(for: action.callUUID, reason: .failed)
       }
     }
   }
@@ -100,10 +116,11 @@ extension CallManager: CXProviderDelegate {
     Log.call.debug("CXEndCallAction - id: \(action.callUUID)")
 
     // Stop dialtone and cancel timeout
-    DialtonePlayer.shared.stop()
     cancelCallTimeout(for: action.callUUID)
 
+    IncomingCallRegistry.shared.end(id: action.callUUID)
     Task {
+      await FulfillRequestManager.shared.cancel(callId: action.callUUID)
       // Snapshot the session as ended so the embedded session reflects the terminal state.
       if var session = await store.session(for: action.callUUID) {
         session.status = .ended
@@ -114,6 +131,8 @@ extension CallManager: CXProviderDelegate {
       }
 
       await store.remove(for: action.callUUID)
+      await refreshDialtone()
+      await restoreAudioSessionIfIdle()
     }
 
     action.fulfill()
@@ -143,6 +162,7 @@ extension CallManager: CXProviderDelegate {
 
     Task {
       await store.updateHeld(for: action.callUUID, isOnHold: action.isOnHold)
+      await refreshDialtone()
 
       await MainActor.run {
         CallEventEmitter.shared.send(
@@ -176,13 +196,7 @@ extension CallManager: CXProviderDelegate {
       let sessions = await store.allSessions
       AudioManager.shared.onAVAudioSessionActivated(calls: sessions)
 
-      // Play dialtone for outgoing calls that are still connecting
-      if let session = sessions.first,
-        session.origin == .outgoingApp || session.origin == .outgoingSystem,
-        session.status == .connecting
-      {
-        DialtonePlayer.shared.play()
-      }
+      await refreshDialtone()
     }
   }
 

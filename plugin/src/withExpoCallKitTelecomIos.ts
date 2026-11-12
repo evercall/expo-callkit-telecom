@@ -19,7 +19,6 @@ import type { ExpoCallKitTelecomPluginProps } from "./withExpoCallKitTelecom";
 const ERROR_MSG_PREFIX = "An error occurred while configuring iOS calls. ";
 
 // Default permission messages
-const CAMERA_USAGE = "Allow $(PRODUCT_NAME) to access your camera";
 const MICROPHONE_USAGE = "Allow $(PRODUCT_NAME) to access your microphone";
 
 // Required background modes for CallKit and PushKit:
@@ -45,10 +44,8 @@ const withPermissions: ConfigPlugin<{
   microphonePermission?: string | false;
 }> = (config, { cameraPermission, microphonePermission }) => {
   return IOSConfig.Permissions.createPermissionsPlugin({
-    NSCameraUsageDescription: CAMERA_USAGE,
     NSMicrophoneUsageDescription: MICROPHONE_USAGE,
   })(config, {
-    NSCameraUsageDescription: cameraPermission,
     NSMicrophoneUsageDescription: microphonePermission,
   });
 };
@@ -257,7 +254,6 @@ const withDefaultDialtone: ConfigPlugin<{
 export const withExpoCallKitTelecomIos: ConfigPlugin<ExpoCallKitTelecomPluginProps> = (
   config,
   {
-    cameraPermission,
     microphonePermission,
     incomingCallTimeout,
     outgoingCallTimeout,
@@ -268,7 +264,7 @@ export const withExpoCallKitTelecomIos: ConfigPlugin<ExpoCallKitTelecomPluginPro
     defaultDialtone,
   },
 ) => {
-  config = withPermissions(config, { cameraPermission, microphonePermission });
+  config = withPermissions(config, { microphonePermission });
   config = withPushNotificationEntitlement(config);
   config = withBackgroundModes(config);
   config = withSiriIntents(config);

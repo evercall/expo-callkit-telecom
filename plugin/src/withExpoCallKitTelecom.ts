@@ -11,11 +11,6 @@ export type ExpoCallKitTelecomPluginProps = {
    */
   microphonePermission?: string | false;
   /**
-   * Custom message for camera permission prompt. Set to false to skip.
-   * @platform ios
-   */
-  cameraPermission?: string | false;
-  /**
    * Timeout in seconds for incoming calls before they are marked as unanswered.
    * @default 45
    * @platform ios

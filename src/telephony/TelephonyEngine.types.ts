@@ -155,6 +155,7 @@ export type TelephonyErrorListener = (error: TelephonyError) => void;
 export interface TelephonySession {
 	readonly id: string;
 	readonly snapshot: TelephonySessionSnapshot;
+	readonly dtmfTonesSent: string;
 
 	accept(): Promise<void>;
 

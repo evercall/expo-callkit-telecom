@@ -116,6 +116,7 @@ type Direction = "incoming" | "outgoing";
 class JsSipSession implements TelephonySession {
 	private current: TelephonySessionSnapshot;
 	private transferInProgress = false;
+	private dtmfTones = '';
 
 	constructor(
 		private readonly engine: JsSipTelephonyEngine,
@@ -157,6 +158,10 @@ class JsSipSession implements TelephonySession {
 			...this.current,
 			remoteIdentity: { ...this.current.remoteIdentity },
 		};
+	}
+
+	get dtmfTonesSent(): string {
+		return this.dtmfTones;
 	}
 
 	update(patch: Partial<TelephonySessionSnapshot>): void {
@@ -276,6 +281,7 @@ class JsSipSession implements TelephonySession {
 		if (this.rtcSession.isEnded())
 			throw new Error("Cannot send DTMF on an ended call");
 		await this.engine.sendSessionDtmf(this, tones.toUpperCase());
+		this.dtmfTones += tones;
 	}
 
 	private async transfer(target: string, replaces?: JsSipSession): Promise<boolean> {

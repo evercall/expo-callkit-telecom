@@ -2,12 +2,14 @@ import CallKit
 import ExpoModulesCore
 
 public class ExpoCallKitTelecomModule: Module {
+  private var networkPathMonitor: NetworkPathMonitor?
   public func definition() -> ModuleDefinition {
     Name("ExpoCallKitTelecom")
 
     // MARK: - Events
 
     Events(
+      "onNetworkPathChanged",
       CallSessionAddedEvent.name,
       CallSessionUpdatedEvent.name,
       CallSessionRemovedEvent.name,
@@ -33,6 +35,23 @@ public class ExpoCallKitTelecomModule: Module {
       Task { @MainActor in
         CallEventEmitter.shared.module = self
       }
+    }
+
+    OnDestroy { [weak self] in
+      Task { @MainActor in self?.networkPathMonitor?.stop() }
+    }
+
+    OnStartObserving("onNetworkPathChanged") { [weak self] in
+      Task { @MainActor [weak self] in
+        guard let self else { return }
+        if self.networkPathMonitor == nil { self.networkPathMonitor = NetworkPathMonitor() }
+        self.networkPathMonitor?.start { [weak self] event in
+          self?.sendEvent("onNetworkPathChanged", event)
+        }
+      }
+    }
+    OnStopObserving("onNetworkPathChanged") { [weak self] in
+      Task { @MainActor in self?.networkPathMonitor?.stop() }
     }
 
     // Register per-event observers

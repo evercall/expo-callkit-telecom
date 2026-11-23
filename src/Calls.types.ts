@@ -1,3 +1,7 @@
+import type { TelephonyError } from './telephony';
+import type { EndEvent } from 'jssip/lib/RTCSession';
+import type { UnRegisteredEvent } from 'jssip/lib/UA';
+
 /**
  * Type of VoIP push token reported by `getVoIPPushToken`.
  *
@@ -36,6 +40,13 @@ export interface NativeEvent {
 // ============================================================================
 // Call sessions
 // ============================================================================
+
+export type Direction = "incoming" | "outgoing";
+export type ErrorContext = Pick<TelephonyError, "nativeCallId" | "sipCallId">;
+export type SipFailureEvent = Partial<EndEvent | UnRegisteredEvent> & {
+	code?: number;
+	reason?: string;
+};
 
 /**
  * Active call as tracked by the module.

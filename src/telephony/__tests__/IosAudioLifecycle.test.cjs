@@ -45,8 +45,8 @@ final class RTCAudioSession {
   static func sharedInstance() -> RTCAudioSession { instance }
   var isAudioEnabled = false
   var activationCheck: (() -> Void)?
-  func audioSessionDidActivate(_ session: AVAudioSession) { activationCheck?() }
-  func audioSessionDidDeactivate(_ session: AVAudioSession) {}
+  func audioSessionDidActivate(_ AVAudioSession) { activationCheck?() }
+  func audioSessionDidDeactivate(_ AVAudioSession) {}
 }
 struct AudioSessionCallInfo { init(from: CallSession) {} }
 struct AudioSessionActivatedEvent { let calls: [AudioSessionCallInfo] }
@@ -55,7 +55,7 @@ final class CallEventEmitter {
   static let shared = CallEventEmitter()
   func send<T>(_ event: T) {}
 }
-struct Logger { func debug(_ message: String) {} }
+struct Logger { func debug(_ String) {} }
 enum Log { static let audio = Logger() }
 final class Manager {
   var isActive = false

@@ -6,6 +6,9 @@ package expo.modules.callkittelecom.events
  * These values must stay aligned with the TypeScript listeners in `Calls.ts`.
  */
 object CallEvents {
+    /** Coarse default-network changes; no addresses or network identifiers. */
+    const val NETWORK_PATH_CHANGED = "onNetworkPathChanged"
+
     /** Emitted when a new native call session is created. */
     const val CALL_SESSION_ADDED = "onCallSessionAdded"
 

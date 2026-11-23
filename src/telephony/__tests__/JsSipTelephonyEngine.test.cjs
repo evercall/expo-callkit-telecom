@@ -39,7 +39,9 @@ class MockSession extends EventEmitter {
 
 	finish(event) {
 		this.ended = true;
-		this.emit(event, { cause: "Rejected", originator: "remote" });
+		this.emit(event, event === "ended"
+			? { cause: "Terminated", originator: "remote", message: { method: "BYE" } }
+			: { cause: "Rejected", originator: "remote" });
 	}
 }
 
@@ -99,6 +101,14 @@ function setup(platform = "ios", initiallyActive = false, engineFile = "../JsSip
 	const nativeScheduled = [];
 	const nativeCancelled = [];
 	const nativeModule = {
+		addListener: (name, callback) => {
+			native[name] = callback;
+			return {
+				remove() {
+					delete native[name];
+				}
+			};
+		},
 		dtmfSchedulerVersion: 2,
 		sendRtpDtmf: async (...args) => {
 			rtpSent.push(args);
@@ -113,6 +123,7 @@ function setup(platform = "ios", initiallyActive = false, engineFile = "../JsSip
 	rtc.connection = { getSenders: () => [{ id: "audio-sender", track: { kind: "audio" }, _peerConnectionId: 7 }] };
 	let starts = 0;
 	const reportedEnds = [];
+	const requestedNativeEnds = [];
 	const answerRequests = [];
 	const fulfilledAnswers = [];
 	const reportedConnections = [];
@@ -126,6 +137,9 @@ function setup(platform = "ios", initiallyActive = false, engineFile = "../JsSip
 		startOutgoingCall: async () => {
 			starts++;
 			return "native-call";
+		},
+		endCall: async (id) => {
+			requestedNativeEnds.push(id);
 		},
 		reportCallEnded: async (...args) => {
 			reportedEnds.push(args);
@@ -183,6 +197,8 @@ function setup(platform = "ios", initiallyActive = false, engineFile = "../JsSip
 		jssip: { URI: require("jssip").URI, C: { DTMF_TRANSPORT: { INFO: "INFO" }, causes: { CANCELED: "Canceled" } } },
 		"../Calls": calls,
 		"./TelephonyEngine.types": contracts,
+		"./SessionRecovery": loadModule(resolve(__dirname, "../SessionRecovery.ts"), {}, globals),
+		"./SessionTermination": loadModule(resolve(__dirname, "../SessionTermination.ts"), {}),
 	}, globals);
 	const engine = new JsSipTelephonyEngine();
 	engine.configuration = { account: { id: "test-account" }, ...(platform === "ios" ? { dtmfTransport: "INFO" } : {}) };
@@ -190,7 +206,7 @@ function setup(platform = "ios", initiallyActive = false, engineFile = "../JsSip
 	const errors = [];
 	engine.subscribeToErrors((error) => errors.push(error));
 	return {
-		engine, rtc, native, nativeModule, rtpSent, nativeScheduled, nativeCancelled, reportedEnds, errors, logs, timers, advanceTime,
+		engine, rtc, native, nativeModule, rtpSent, nativeScheduled, nativeCancelled, reportedEnds, requestedNativeEnds, errors, logs, timers, advanceTime,
 		calls, answerRequests, fulfilledAnswers, reportedConnections, failedAnswers,
 		starts: () => starts, audioTransitions, audioDeviceModule,
 		setAudioActive: (active) => {
@@ -1091,7 +1107,8 @@ const setupTransfer = (platform, engineFile) => {
 	state.rtc.isEstablished = () => true;
 	state.rtc.terminate = () => {
 		terminations++;
-		state.rtc.finish("ended");
+		state.rtc.ended = true;
+		state.rtc.emit("ended", { originator: "local", cause: "Terminated" });
 	};
 	state.rtc.refer = (target, options) => {
 		const subscriber = new EventEmitter();
@@ -1125,7 +1142,8 @@ for (const platform of ["ios", "android"]) {
 			assert.equal(state.terminations(), 1);
 			assert.equal(state.engine.getSession(state.source.id), undefined);
 			assert.equal(state.engine.getSession(state.target.id), state.target);
-			assert.deepEqual(state.reportedEnds, [["native-source", "remoteEnded"]]);
+			assert.deepEqual(state.reportedEnds, []);
+			assert.deepEqual(state.requestedNativeEnds, ["native-source"]);
 			assert.deepEqual(listenerCounts(state.rtc), before);
 			assert.equal(state.refers[0].subscriber.listenerCount("requestFailed"), 0);
 			assert.equal(state.timers.size, 0);
@@ -1280,7 +1298,9 @@ test("iOS rejects expired or ambiguous admission without reporting or answering"
 		const state = setup();
 		state.nativeModule.claimIncomingSipCall = async () => ({ decision: "reject", reason });
 		let status;
-		state.rtc.terminate = (options) => { status = options.status_code; };
+		state.rtc.terminate = (options) => {
+			status = options.status_code;
+		};
 		state.calls.reportIncomingCall = async () => assert.fail("Rejected INVITE must not ring");
 		await state.engine.onRtcSession({ session: state.rtc, request: { call_id: "late" } });
 		assert.equal(status, 480);
@@ -1319,10 +1339,14 @@ test("SIP CANCEL during native admission ends the push call without attaching", 
 test("ending during audio preparation prevents SIP answer", async () => {
 	const state = setup();
 	state.rtc.isEstablished = () => false;
-	state.rtc.terminate = () => { state.rtc.ended = true; };
+	state.rtc.terminate = () => {
+		state.rtc.ended = true;
+	};
 	state.rtc.answer = () => assert.fail("Ended call cannot be answered");
 	state.engine.attachSession(state.rtc, "native-call", state.rtc.id, "incoming");
-	state.engine.synchronizeCallKitAudio = async () => { await state.engine.endFromSystem("native-call"); };
+	state.engine.synchronizeCallKitAudio = async () => {
+		await state.engine.endFromSystem("native-call");
+	};
 	await state.engine.answerFromSystem("native-call", "request");
 	assert.equal(state.engine.pendingAnswerRequest.size, 0);
 });
@@ -1330,8 +1354,11 @@ test("ending during audio preparation prevents SIP answer", async () => {
 test("failed iOS answer fulfillment terminates SIP media", async () => {
 	const state = setup();
 	state.rtc.isEstablished = () => false;
-	state.rtc.answer = () => {};
-	state.rtc.terminate = () => { state.rtc.ended = true; };
+	state.rtc.answer = () => {
+	};
+	state.rtc.terminate = () => {
+		state.rtc.ended = true;
+	};
 	const session = state.engine.attachSession(state.rtc, "native-call", state.rtc.id, "incoming");
 	await state.engine.answerFromSystem("native-call", "request");
 	state.nativeModule.fulfillIncomingCallAnswered = async () => false;
@@ -1339,3 +1366,163 @@ test("failed iOS answer fulfillment terminates SIP media", async () => {
 	assert.equal(state.rtc.ended, true);
 	assert.deepEqual(state.reportedEnds, [["native-call", "failed"]]);
 });
+
+const recoveryEngineCases = ["ios", "android"].flatMap((platform) =>
+	["../JsSipTelephonyEngine.ts", "../../../build/telephony/JsSipTelephonyEngine.js"].map((engineFile) => ({ platform, engineFile }))
+);
+
+for (const { platform, engineFile } of recoveryEngineCases) {
+	const recoveringEngine = () => {
+		const state = setup(platform, true, engineFile);
+		const peer = new EventEmitter();
+		peer.addEventListener = (event, listener) => peer.on(event, listener);
+		peer.removeEventListener = (event, listener) => peer.off(event, listener);
+		peer.iceConnectionState = "connected";
+		peer.connectionState = "connected";
+		peer.signalingState = "stable";
+		peer.getStats = async () => new Map();
+		peer.localDescription = { sdp: "a=ice-ufrag:OLD\r\na=ice-pwd:OLD\r\n" };
+		state.rtc.connection = peer;
+		state.rtc.isEstablished = () => !state.rtc.ended;
+		state.rtc.isOnHold = () => ({ local: false, remote: false });
+		state.rtc.isMuted = () => ({ audio: false });
+		state.rtc.terminate = (options) => {
+			state.rtc.ended = true;
+			state.rtc.emit("ended", { originator: "local", cause: options?.cause ?? "Terminated" });
+		};
+		state.rtc.renegotiate = () => {
+			state.offers++;
+			return true;
+		};
+		state.offers = 0;
+		let online = true;
+		const ua = new EventEmitter();
+		ua.isConnected = () => online;
+		ua.stop = () => {
+		};
+		ua.terminateSessions = () => state.rtc.terminate();
+		state.engine.ua = ua;
+		state.engine.bindUa(ua);
+		state.engine.attachSession(state.rtc, "native-recovery", state.rtc.id, "outgoing");
+		state.ua = ua;
+		state.setOnline = (value) => {
+			online = value;
+		};
+		return state;
+	};
+
+	test(`${platform} engine recovery (${engineFile}): transport and path events defer until usable, close cancels work`, async () => {
+		const state = recoveringEngine();
+		await flush();
+		const audioBefore = state.audioTransitions.length;
+		state.setOnline(false);
+		state.ua.emit("disconnected", { code: 1006 });
+		state.advanceTime(1000);
+		await flush();
+		assert.equal(state.offers, 0);
+		state.native.onNetworkPathChanged({ initial: false, status: "unsatisfied", interfaces: [] });
+		state.setOnline(true);
+		state.ua.emit("connected");
+		state.advanceTime(1000);
+		await flush();
+		assert.equal(state.offers, 0);
+		state.native.onNetworkPathChanged({ initial: false, status: "satisfied", interfaces: ["cellular"] });
+		state.advanceTime(1000);
+		await flush();
+		assert.equal(state.offers, 1);
+		assert.equal(state.audioTransitions.length, audioBefore);
+		await state.engine.close();
+		state.advanceTime(60_000);
+		await flush();
+		assert.equal(state.offers, 1);
+		assert.equal(state.timers.size, 0);
+		assert.equal(state.engine.recoveries.size, 0);
+		assert.equal(state.rtc.connection.listenerCount("iceconnectionstatechange"), 0);
+		assert.equal(state.native.onNetworkPathChanged, undefined);
+	});
+
+	test(`${platform} engine recovery (${engineFile}): RTP timeout maps to failure with correlated termination evidence`, async () => {
+		const state = recoveringEngine();
+		state.rtc.emit("ended", { originator: "local", cause: "RTP Timeout" });
+		await flush();
+		assert.deepEqual(state.reportedEnds, [["native-recovery", "failed"]]);
+		const evidence = state.logs.find((row) => row.args[1]?.event === "session-terminated").args[1];
+		assert.equal(evidence.originator, "local");
+		assert.equal(evidence.cause, "RTP Timeout");
+		assert.equal(evidence.nativeCallId, "native-recovery");
+		assert.ok(evidence.timestamp);
+		if (platform === "ios") assert.equal(evidence.nativeAudioActive, true);
+		assert.equal(state.engine.recoveries.size, 0);
+	});
+
+	test(`${platform} engine recovery (${engineFile}): native local hangup is not reported as a remote end or requested twice`, async () => {
+		const state = recoveringEngine();
+		state.native.addCallEndedListener({ id: "native-recovery" });
+		await flush();
+		assert.deepEqual(state.reportedEnds, []);
+		assert.deepEqual(state.requestedNativeEnds, []);
+		assert.equal(state.engine.getSession(state.rtc.id), undefined);
+		assert.equal(state.timers.size, 0);
+	});
+	for (const callState of ["active", "muted", "held"]) {
+		test(`${platform} engine recovery (${engineFile}): ${callState} preserves the call and requires the appropriate RTP proof`, async () => {
+			const state = recoveringEngine();
+			await flush();
+			const session = state.engine.getSession(state.rtc.id);
+			const peer = state.rtc.connection;
+			const held = callState === "held";
+			const muted = callState === "muted";
+			state.rtc.isOnHold = () => ({ local: held, remote: false });
+			state.rtc.isMuted = () => ({ audio: muted });
+			if (held) state.rtc.emit("hold");
+			if (muted) state.rtc.emit("muted");
+			const snapshotBefore = session.snapshot;
+			const audioBefore = state.audioTransitions.length;
+			let packets = 100;
+			peer.getStats = async () => {
+				packets += 10;
+				return new Map([
+					["in", { id: "in", type: "inbound-rtp", kind: "audio", packetsReceived: packets, bytesReceived: packets * 20 }],
+					["out", { id: "out", type: "outbound-rtp", kind: "audio", packetsSent: muted ? 100 : packets, bytesSent: muted ? 2000 : packets * 20 }],
+				]);
+			};
+			let finishNegotiation;
+			state.rtc.renegotiate = (options, done) => {
+				assert.equal(options.rtcOfferConstraints.iceRestart, true);
+				state.offers++;
+				finishNegotiation = () => {
+					const offerSdp = "a=ice-ufrag:NEW\r\na=ice-pwd:NEW\r\n";
+					state.rtc.emit("sdp", { originator: "local", type: "offer", sdp: offerSdp });
+					peer.localDescription = { sdp: offerSdp };
+					state.rtc.emit("sdp", { originator: "remote", type: "answer", sdp: offerSdp });
+					done();
+				};
+				return true;
+			};
+			state.native.onNetworkPathChanged({ initial: false, status: "satisfied", interfaces: ["wifi"] });
+			state.advanceTime(500);
+			await flush();
+			assert.equal(state.offers, 1);
+			finishNegotiation();
+			for (let sample = 0; sample < 3; sample++) {
+				state.advanceTime(500);
+				await flush();
+			}
+			assert.equal(state.engine.getSession(state.rtc.id), session);
+			assert.equal(state.rtc.connection, peer);
+			assert.equal(session.snapshot.nativeCallId, snapshotBefore.nativeCallId);
+			assert.equal(session.snapshot.isMuted, snapshotBefore.isMuted);
+			assert.equal(session.snapshot.isOnHold, snapshotBefore.isOnHold);
+			assert.equal(state.audioTransitions.length, audioBefore);
+			assert.deepEqual(state.reportedEnds, []);
+			const completion = state.logs.find((row) => row.args[1]?.event ===
+				(held ? "transport-restored-media-deferred-while-held" : "recovery-completed"));
+			assert.ok(completion);
+			assert.equal(completion.args[1].mediaVerified, !held);
+			assert.equal(completion.args[1].platform, platform);
+			assert.equal(state.timers.size, 0);
+			await state.engine.close();
+		});
+	}
+
+}

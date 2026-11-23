@@ -6,6 +6,7 @@ import expo.modules.kotlin.Promise
 import expo.modules.callkittelecom.events.CallEventEmitter
 import expo.modules.callkittelecom.events.CallEvents
 import expo.modules.callkittelecom.managers.CallAudioManager
+import expo.modules.callkittelecom.managers.NetworkPathMonitor
 import expo.modules.callkittelecom.managers.CaptureSessionManager
 import expo.modules.callkittelecom.managers.VoIPPushManager
 import expo.modules.callkittelecom.models.CallEndedReason
@@ -20,12 +21,15 @@ import expo.modules.kotlin.modules.ModuleDefinition
 import java.util.UUID
 
 class ExpoCallKitTelecomModule : Module() {
+    private var networkPathMonitor: NetworkPathMonitor? = null
+
     override fun definition() = ModuleDefinition {
         Name("ExpoCallKitTelecom")
 
         // region Events
 
         Events(
+            CallEvents.NETWORK_PATH_CHANGED,
             CallEvents.CALL_SESSION_ADDED,
             CallEvents.CALL_SESSION_UPDATED,
             CallEvents.CALL_SESSION_REMOVED,
@@ -60,7 +64,22 @@ class ExpoCallKitTelecomModule : Module() {
 
         }
 
-        OnDestroy { CallEventEmitter.setSender(null) }
+        OnDestroy {
+            networkPathMonitor?.stop()
+            networkPathMonitor = null
+            CallEventEmitter.setSender(null)
+        }
+
+        OnStartObserving(CallEvents.NETWORK_PATH_CHANGED) {
+            val context = appContext.reactContext ?: return@OnStartObserving
+            if (networkPathMonitor == null) {
+                networkPathMonitor = NetworkPathMonitor(context) { body ->
+                    sendEvent(CallEvents.NETWORK_PATH_CHANGED, body)
+                }
+            }
+            networkPathMonitor?.start()
+        }
+        OnStopObserving(CallEvents.NETWORK_PATH_CHANGED) { networkPathMonitor?.stop() }
 
         // Register per-event observers
         OnStartObserving(CallEvents.CALL_SESSION_ADDED) {

@@ -4,359 +4,22 @@ import * as JsSIP from "jssip";
 import { NativeModules, Platform } from "react-native";
 
 import ExpoCallKitTelecomModule from "../ExpoCallKitTelecomModule";
+import { SessionRecovery } from "./SessionRecovery";
+import { sessionTermination } from "./SessionTermination";
 import type { EndEvent, IncomingDTMFEvent, OutgoingDTMFEvent, RTCSession, } from "jssip/lib/RTCSession";
-import type { RTCSessionEvent, UnRegisteredEvent } from "jssip/lib/UA";
+import type { RTCSessionEvent } from "jssip/lib/UA";
 
-import { addAudioRouteChangedListener, addAudioSessionActivatedListener, addAudioSessionDeactivatedListener, addCallAnsweredListener, addCallEndedListener, addCallSessionRemovedListener, addCallIntentReceivedListener, addDTMFListener, addSetHeldActionListener, addSetMutedActionListener, answerCall, failIncomingCallConnected, fulfillIncomingCallConnected, getAudioSession, getCallSessions, reportCallEnded, reportIncomingCall, reportOutgoingCallConnected, setHeld, setMuted, startOutgoingCall, } from "../Calls";
-import type { AudioDevice, AudioDeviceDirection, TelephonyConfiguration, TelephonyEngine, TelephonyError, TelephonyErrorListener, TelephonyErrorOperation, TelephonySession, TelephonySessionSnapshot, TelephonySnapshot, TelephonySnapshotListener, } from "./TelephonyEngine.types";
+import { addAudioRouteChangedListener, addAudioSessionActivatedListener, addAudioSessionDeactivatedListener, addCallAnsweredListener, addCallEndedListener, addCallIntentReceivedListener, addCallSessionRemovedListener, addDTMFListener, addSetHeldActionListener, addSetMutedActionListener, endCall, failIncomingCallConnected, fulfillIncomingCallConnected, getAudioSession, getCallSessions, reportCallEnded, reportIncomingCall, reportOutgoingCallConnected, startOutgoingCall, } from "../Calls";
+import type { AudioDevice, AudioDeviceDirection, TelephonyConfiguration, TelephonyEngine, TelephonyError, TelephonyErrorListener, TelephonyErrorOperation, TelephonySession, TelephonySnapshot, TelephonySnapshotListener, } from "./TelephonyEngine.types";
 import { TelephonyClientStatus, TelephonySessionStatus, } from "./TelephonyEngine.types";
+import { JsSipSession } from './JsSipSession';
+import { Direction, ErrorContext, SipFailureEvent } from '../Calls.types';
+import { logDtmf } from '../utils/log';
+import { errorCode, errorMessage, mediaFailureError, sipFailureError } from '../utils/errors';
+import { decodeSipUser, validateDtmfTones } from '../utils/sip';
+import { requiredPermissions } from '../utils/permissions';
+import { AUDIO_OPTIONS, INVITE_DTMF_DELAY_MS, REGISTRATION_TIMEOUT_MS } from '../constants';
 
-const AUDIO_OPTIONS = {
-	mediaConstraints: { audio: true, video: false },
-	sessionTimersExpires: 5400,
-} as const;
-
-const REGISTRATION_TIMEOUT_MS = 30_000;
-const INVITE_DTMF_DELAY_MS = 5_000;
-const TRANSFER_TIMEOUT_MS = 20_000;
-
-// JsSIP 3.10 returns a ReferSubscriber (or false), although its declarations
-// incorrectly declare RTCSession.refer() as void. Only use its public emitter API.
-type ReferSubscription = {
-	removeListener(event: string, listener: () => void): unknown;
-};
-
-const READ_PHONE_NUMBERS_PERMISSION = "android.permission.READ_PHONE_NUMBERS";
-
-function decodeSipUser(user: string): string {
-	try {
-		return decodeURIComponent(user);
-	} catch {
-		return user;
-	}
-}
-
-type ErrorContext = Pick<TelephonyError, "nativeCallId" | "sipCallId">;
-
-function logDtmf(message: string, context: ErrorContext, details: object = {}): void {
-	console.info(`[JsSipTelephonyEngine DTMF] ${message}`, {
-		timestamp: new Date().toISOString(),
-		...context,
-		...details,
-	});
-}
-
-
-type SipFailureEvent = Partial<EndEvent | UnRegisteredEvent> & {
-	code?: number;
-	reason?: string;
-};
-
-function sipFailureError(prefix: string, event: SipFailureEvent): Error {
-	const message = "message" in event ? event.message : undefined;
-	const response = "response" in event ? event.response : undefined;
-	const candidate = response ?? message;
-	const statusCode =
-			  candidate && "status_code" in candidate
-				  ? candidate.status_code
-				  : event.code;
-	const reasonPhrase =
-			  candidate && "reason_phrase" in candidate
-				  ? candidate.reason_phrase
-				  : event.reason;
-	const details = [
-		event.cause,
-		statusCode
-			? `SIP ${statusCode}${reasonPhrase ? ` ${reasonPhrase}` : ""}`
-			: reasonPhrase,
-		"originator" in event && event.originator
-			? `originator ${event.originator}`
-			: undefined,
-	].filter(Boolean);
-	const error = new Error(
-		`${prefix}: ${details.join("; ") || "unknown reason"}`
-	) as Error & { code?: string };
-	if (statusCode) error.code = `SIP_${statusCode}`;
-	return error;
-}
-
-function mediaFailureError(operation: string, cause: unknown): Error {
-	return new Error(`${operation}: ${errorMessage(cause)}`);
-}
-
-function errorCode(error: unknown): string | undefined {
-	if (typeof error !== "object" || error === null || !("code" in error))
-		return undefined;
-	return typeof error.code === "string" ? error.code : undefined;
-}
-
-function errorMessage(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
-}
-
-function requiredPermissions(error: unknown): readonly string[] {
-	const message = errorMessage(error);
-	const permissions = message.match(/android\.permission\.[A-Z_]+/g) ?? [];
-	if (
-		errorCode(error) === "ERR_MISSING_CALL_PERMISSIONS" &&
-		permissions.length === 0
-	) {
-		return [READ_PHONE_NUMBERS_PERMISSION];
-	}
-	return [...new Set(permissions)];
-}
-
-function validateDtmfTones(tones: string): void {
-	if (typeof tones !== "string" || !/^[0-9A-D#*,]+$/i.test(tones))
-		throw new Error("Invalid DTMF tones");
-}
-
-type Direction = "incoming" | "outgoing";
-
-class JsSipSession implements TelephonySession {
-	private current: TelephonySessionSnapshot;
-	private transferInProgress = false;
-	private dtmfTones = '';
-
-	constructor(
-		private readonly engine: JsSipTelephonyEngine,
-		readonly rtcSession: RTCSession,
-		nativeCallId: string,
-		sipCallId: string,
-		direction: Direction
-	) {
-		const identity = rtcSession.remote_identity;
-		const phoneNumber =
-				  (identity?.uri?.user && decodeSipUser(identity.uri.user)) ||
-				  identity?.toString() ||
-				  "unknown";
-		this.current = {
-			id: sipCallId,
-			nativeCallId,
-			sipCallId,
-			direction,
-			status:
-				direction === "incoming"
-					? TelephonySessionStatus.RINGING
-					: TelephonySessionStatus.TRYING,
-			remoteIdentity: {
-				phoneNumber,
-				displayName: identity?.display_name || phoneNumber,
-			},
-			startedAt: rtcSession.start_time?.getTime() ?? Date.now(),
-			isMuted: false,
-			isOnHold: false,
-		};
-	}
-
-	get id(): string {
-		return this.current.id;
-	}
-
-	get snapshot(): TelephonySessionSnapshot {
-		return {
-			...this.current,
-			remoteIdentity: { ...this.current.remoteIdentity },
-		};
-	}
-
-	get dtmfTonesSent(): string {
-		return this.dtmfTones;
-	}
-
-	update(patch: Partial<TelephonySessionSnapshot>): void {
-		this.current = { ...this.current, ...patch };
-		this.engine.sessionDidChange();
-	}
-
-	async accept(): Promise<void> {
-		if (this.current.direction === "incoming") {
-			if (!this.rtcSession.isEstablished())
-				await answerCall(this.current.nativeCallId);
-			return;
-		}
-		await this.answerMedia();
-	}
-
-	/** Answers SIP after the native answer action, without requesting that action again. */
-	async answerMedia(): Promise<void> {
-		await this.engine.answerIncomingMedia(this);
-	}
-
-	async accepted(): Promise<boolean> {
-		if (this.rtcSession.isEnded())
-			throw new Error("Call ended before it could be accepted");
-		if (this.current.connectedAt !== undefined) return true;
-
-		return new Promise((resolve, reject) => {
-			const cleanup = () => {
-				this.rtcSession.removeListener("confirmed", onConfirmed);
-				this.rtcSession.removeListener("failed", onFailed);
-				this.rtcSession.removeListener("ended", onEnded);
-			};
-			const onConfirmed = () => {
-				cleanup();
-				resolve(true);
-			};
-			const onFailed = (event: EndEvent) => {
-				cleanup();
-				reject(sipFailureError("Call failed before it could be accepted", event));
-			};
-			const onEnded = () => {
-				cleanup();
-				reject(new Error("Call ended before it could be accepted"));
-			};
-			this.rtcSession.once("confirmed", onConfirmed);
-			this.rtcSession.once("failed", onFailed);
-			this.rtcSession.once("ended", onEnded);
-		});
-	}
-
-	async reject(): Promise<void> {
-		if (!this.rtcSession.isEnded())
-			this.rtcSession.terminate({ status_code: 486 });
-	}
-
-	async cancel(): Promise<void> {
-		if (!this.rtcSession.isEnded()) this.rtcSession.terminate();
-	}
-
-	async terminate(): Promise<void> {
-		if (!this.rtcSession.isEnded()) this.rtcSession.terminate();
-	}
-
-	async hold(): Promise<boolean> {
-		const changed = this.rtcSession.hold();
-		if (changed) {
-			this.update({ isOnHold: true, status: TelephonySessionStatus.ON_HOLD });
-			await setHeld(this.current.nativeCallId, true);
-		}
-		return changed;
-	}
-
-	async unhold(): Promise<boolean> {
-		const changed = this.rtcSession.unhold();
-		if (changed) {
-			this.update({ isOnHold: false, status: TelephonySessionStatus.ACTIVE });
-			await setHeld(this.current.nativeCallId, false);
-		}
-		return changed;
-	}
-
-	async blindTransfer(target: string): Promise<boolean> {
-		if (typeof target !== "string" || !JsSIP.URI.parse(target)) {
-			throw new TypeError("Transfer target must be a valid SIP URI");
-		}
-		return this.transfer(target);
-	}
-
-	async attendedTransfer(target: { id: string }): Promise<boolean> {
-		const targetSession = this.engine.getSession(target.id);
-		if (!(targetSession instanceof JsSipSession)) throw new Error("Session B not found");
-		if (targetSession === this) throw new Error("Cannot transfer a session to itself");
-		if (targetSession.rtcSession.isEnded() || !targetSession.rtcSession.isEstablished()) {
-			throw new Error("Transfer target session must be established");
-		}
-		return this.transfer(targetSession.rtcSession.remote_identity.uri.toString(), targetSession);
-	}
-
-	async setMuted(muted: boolean): Promise<void> {
-		if (muted) this.rtcSession.mute({ audio: true, video: false });
-		else this.rtcSession.unmute({ audio: true, video: false });
-		this.update({ isMuted: muted });
-		await setMuted(this.current.nativeCallId, muted);
-	}
-
-	async setInput(device: AudioDevice): Promise<void> {
-		await this.setAudioDevice("input", device);
-	}
-
-	async setOutput(device: AudioDevice): Promise<void> {
-		await this.setAudioDevice("output", device);
-	}
-
-	async dtmf(tones: string): Promise<void> {
-		validateDtmfTones(tones);
-		await this.accepted();
-		if (this.rtcSession.isEnded())
-			throw new Error("Cannot send DTMF on an ended call");
-		await this.engine.sendSessionDtmf(this, tones.toUpperCase());
-		this.dtmfTones += tones;
-	}
-
-	private async transfer(target: string, replaces?: JsSipSession): Promise<boolean> {
-		if (this.engine.getSession(this.id) !== this || this.rtcSession.isEnded()) {
-			throw new Error("Cannot transfer an ended or removed call");
-		}
-		if (!this.rtcSession.isEstablished()) throw new Error("Transfer source session must be established");
-		if (this.transferInProgress) throw new Error("A transfer is already in progress for this call");
-		this.transferInProgress = true;
-		try {
-			const success = await this.requestTransfer(target, replaces);
-			if (success) await this.terminate();
-			return success;
-		} finally {
-			this.transferInProgress = false;
-		}
-	}
-
-	private requestTransfer(target: string, replaces?: JsSipSession): Promise<boolean> {
-		return new Promise<boolean>((resolve, reject) => {
-			let settled = false;
-			let subscription: ReferSubscription | false | undefined;
-			const cleanup = () => {
-				clearTimeout(timeout);
-				this.rtcSession.removeListener("ended", onFailure);
-				this.rtcSession.removeListener("failed", onFailure);
-				replaces?.rtcSession.removeListener("ended", onFailure);
-				replaces?.rtcSession.removeListener("failed", onFailure);
-				if (subscription) {
-					subscription.removeListener("requestSucceeded", onSuccess);
-					subscription.removeListener("requestFailed", onFailure);
-				}
-			};
-			const finish = (success: boolean) => {
-				if (settled) return;
-				settled = true;
-				cleanup();
-				resolve(success);
-			};
-			const onSuccess = () => finish(true);
-			const onFailure = () => finish(false);
-			const timeout = setTimeout(onFailure, TRANSFER_TIMEOUT_MS);
-			this.rtcSession.once("ended", onFailure);
-			this.rtcSession.once("failed", onFailure);
-			replaces?.rtcSession.once("ended", onFailure);
-			replaces?.rtcSession.once("failed", onFailure);
-			const sendRefer = async () => {
-				// JsSIP 3.10 returns a ReferSubscriber (or false), although its declarations
-				// incorrectly declare RTCSession.refer() as void. Only use its public emitter API.
-				subscription = this.rtcSession.refer(target, {
-					replaces: replaces?.rtcSession,
-					eventHandlers: { requestSucceeded: onSuccess, requestFailed: onFailure },
-				}) as unknown as ReferSubscription | false;
-				// Cover a synchronous callback during sendRefer before the handle exists.
-				if (settled) cleanup();
-				if (subscription === false) onFailure();
-			};
-			sendRefer().catch((error: unknown) => {
-				if (settled) return;
-				settled = true;
-				cleanup();
-				reject(error);
-			});
-		});
-	}
-
-	private async setAudioDevice(direction: AudioDeviceDirection, device: AudioDevice): Promise<void> {
-		if (this.rtcSession.isEnded()) throw new Error("Cannot change audio devices on an ended call");
-		if (device.direction !== direction) throw new Error(`Expected an ${direction} audio device`);
-		if (!this.engine.getAudioDevices(direction).some((candidate) => candidate.id === device.id)) {
-			throw new Error("Audio device is no longer available");
-		}
-		await ExpoCallKitTelecomModule.setAudioDevice(this.current.nativeCallId, direction, device.id);
-	}
-}
 
 /** React Native JsSIP engine with native CallKit/Telecom state projection. */
 export class JsSipTelephonyEngine implements TelephonyEngine {
@@ -366,6 +29,9 @@ export class JsSipTelephonyEngine implements TelephonyEngine {
 	private revision = 0;
 	private closed = false;
 	private readonly sessions = new Map<string, JsSipSession>();
+	private readonly recoveries = new Map<string, SessionRecovery>();
+	private readonly nativeEnding = new Set<string>();
+	private networkPathAvailable = true;
 	private readonly sessionsByNativeId = new Map<string, JsSipSession>();
 	private readonly listeners = new Set<TelephonySnapshotListener>();
 	private readonly errorListeners = new Set<TelephonyErrorListener>();
@@ -386,6 +52,14 @@ export class JsSipTelephonyEngine implements TelephonyEngine {
 			});
 		}
 		this.nativeSubscriptions = [
+			...((Platform.OS === "ios" || Platform.OS === "android") && typeof ExpoCallKitTelecomModule.addListener === "function"
+				? [ExpoCallKitTelecomModule.addListener("onNetworkPathChanged", (event: { initial: boolean; status: string; interfaces: string[] }) => {
+					if (this.closed) return;
+					this.networkPathAvailable = event.status === "satisfied";
+					if (event.initial) return;
+					for (const recovery of this.recoveries.values()) recovery.requestRecovery("network-change");
+				})]
+				: []),
 			...(Platform.OS === "ios"
 				? [
 					addAudioSessionActivatedListener(() =>
@@ -542,6 +216,7 @@ export class JsSipTelephonyEngine implements TelephonyEngine {
 	async disconnect(): Promise<void> {
 		if (!this.ua) return;
 		this.setClientStatus(TelephonyClientStatus.DISCONNECTING);
+		this.disposeRecoveries();
 		this.ua.stop();
 		this.ua.removeAllListeners();
 		this.ua = undefined;
@@ -550,6 +225,8 @@ export class JsSipTelephonyEngine implements TelephonyEngine {
 
 	async close(): Promise<void> {
 		if (this.closed) return;
+		this.closed = true;
+		this.disposeRecoveries();
 		this.ua?.terminateSessions();
 		for (const nativeCallId of [...this.pendingAnswerRequest.keys()]) {
 			await this.clearPendingAnswer(nativeCallId);
@@ -559,7 +236,6 @@ export class JsSipTelephonyEngine implements TelephonyEngine {
 		this.nativeSubscriptions.splice(0).forEach((subscription) => subscription.remove());
 		this.listeners.clear();
 		this.errorListeners.clear();
-		this.closed = true;
 		await this.synchronizeCallKitAudio();
 	}
 
@@ -581,7 +257,7 @@ export class JsSipTelephonyEngine implements TelephonyEngine {
 			{ hasVideo: false }
 		);
 		try {
-			const rtcSession = this.ua.call(uri, {...AUDIO_OPTIONS, pcConfig: { iceServers: this.configuration.iceServers ?? [] }});
+			const rtcSession = this.ua.call(uri, { ...AUDIO_OPTIONS, pcConfig: { iceServers: this.configuration.iceServers ?? [] } });
 			return this.attachSession(
 				rtcSession,
 				nativeCallId,
@@ -701,6 +377,24 @@ export class JsSipTelephonyEngine implements TelephonyEngine {
 		this.emitSnapshot();
 	}
 
+	/** @internal Validate again after the audio await; native end/timeout can race it. */
+	async answerIncomingMedia(session: JsSipSession): Promise<void> {
+		const nativeCallId = session.snapshot.nativeCallId;
+		if (session.rtcSession.isEnded() || session.rtcSession.isEstablished() || this.answeringNativeIds.has(nativeCallId)) return;
+		this.answeringNativeIds.add(nativeCallId);
+		await this.synchronizeCallKitAudio();
+		const requestId = this.pendingAnswerRequest.get(nativeCallId);
+		const valid = Platform.OS !== "ios" || (requestId &&
+			await ExpoCallKitTelecomModule.validateIncomingSipCall(nativeCallId, session.id, requestId));
+		if (!valid || session.rtcSession.isEnded()) {
+			await this.clearPendingAnswer(nativeCallId);
+			await session.terminate();
+			await reportCallEnded(nativeCallId, "failed");
+			return;
+		}
+		session.rtcSession.answer({ ...AUDIO_OPTIONS, pcConfig: { iceServers: this.configuration?.iceServers } });
+	}
+
 	private logAudioEngineState(reason: string): void {
 		if (Platform.OS !== "ios") return;
 		console.info("[JsSipTelephonyEngine Audio] Engine state", {
@@ -764,16 +458,21 @@ export class JsSipTelephonyEngine implements TelephonyEngine {
 	}
 
 	private bindUa(ua: JsSIP.UA): void {
-		ua.on("connected", () =>
-			this.setClientStatus(TelephonyClientStatus.CONNECTED)
-		);
-		ua.on("registered", () =>
-			this.setClientStatus(TelephonyClientStatus.CONNECTED)
-		);
+		ua.on("connected", () => {
+			this.setClientStatus(TelephonyClientStatus.CONNECTED);
+			for (const recovery of this.recoveries.values()) recovery.handleSignalingTransportConnected();
+		});
+		ua.on("registered", () => {
+			this.setClientStatus(TelephonyClientStatus.CONNECTED);
+			for (const recovery of this.recoveries.values()) recovery.handleSignalingTransportConnected();
+		});
 		ua.on("disconnected", (event) => {
 			const expected =
 					  this.clientStatus === TelephonyClientStatus.DISCONNECTING;
 			const connecting = this.clientStatus === TelephonyClientStatus.CONNECTING;
+			if (!expected && !this.closed) {
+				for (const recovery of this.recoveries.values()) recovery.handleSignalingTransportDisconnected();
+			}
 			this.setClientStatus(TelephonyClientStatus.RECOVERING);
 			if (!expected && !connecting) {
 				this.emitError(
@@ -879,24 +578,6 @@ export class JsSipTelephonyEngine implements TelephonyEngine {
 		}
 	}
 
-	/** @internal Validate again after the audio await; native end/timeout can race it. */
-	async answerIncomingMedia(session: JsSipSession): Promise<void> {
-		const nativeCallId = session.snapshot.nativeCallId;
-		if (session.rtcSession.isEnded() || session.rtcSession.isEstablished() || this.answeringNativeIds.has(nativeCallId)) return;
-		this.answeringNativeIds.add(nativeCallId);
-		await this.synchronizeCallKitAudio();
-		const requestId = this.pendingAnswerRequest.get(nativeCallId);
-		const valid = Platform.OS !== "ios" || (requestId &&
-			await ExpoCallKitTelecomModule.validateIncomingSipCall(nativeCallId, session.id, requestId));
-		if (!valid || session.rtcSession.isEnded()) {
-			await this.clearPendingAnswer(nativeCallId);
-			await session.terminate();
-			await reportCallEnded(nativeCallId, "failed");
-			return;
-		}
-		session.rtcSession.answer({ ...AUDIO_OPTIONS, pcConfig: { iceServers: this.configuration?.iceServers } });
-	}
-
 	private async clearPendingAnswer(nativeCallId: string): Promise<void> {
 		const requestId = this.pendingAnswerRequest.get(nativeCallId);
 		this.pendingAnswerRequest.delete(nativeCallId);
@@ -939,6 +620,34 @@ export class JsSipTelephonyEngine implements TelephonyEngine {
 		}
 		this.sessions.set(session.id, session);
 		this.sessionsByNativeId.set(nativeCallId, session);
+		const logRecovery = (event: string, details: Record<string, unknown> = {}) => {
+			console.info("[JsSipTelephonyEngine Recovery]", {
+				timestamp: new Date().toISOString(), ...this.errorContext(session), event, ...details,
+				isMuted: session.snapshot.isMuted, isOnHold: session.snapshot.isOnHold,
+				platform: Platform.OS, nativeAudioActive: getAudioSession().isActive,
+				...(Platform.OS === "ios" ? {
+					audioAvailability: AudioDeviceModule.getEngineAvailability(),
+					audioEngineRunning: AudioDeviceModule.isEngineRunning(),
+					audioRecording: AudioDeviceModule.isRecording(),
+					audioPlaying: AudioDeviceModule.isPlaying(),
+				} : {}),
+			});
+		};
+		const recovery = new SessionRecovery(
+			rtcSession,
+			() => !this.closed && this.clientStatus !== TelephonyClientStatus.DISCONNECTING &&
+				this.networkPathAvailable && this.ua?.isConnected() === true,
+			logRecovery,
+			(error) => this.emitError("mediaNegotiation", error, this.errorContext(session))
+		);
+		this.recoveries.set(session.id, recovery);
+		const recordTermination = (event?: EndEvent) => {
+			recovery.dispose();
+			this.recoveries.delete(session.id);
+			const termination = sessionTermination(event);
+			logRecovery("session-terminated", termination);
+			return termination.reason;
+		};
 		rtcSession.on("progress", () =>
 			session.update({ status: TelephonySessionStatus.RINGING })
 		);
@@ -1021,6 +730,7 @@ export class JsSipTelephonyEngine implements TelephonyEngine {
 		rtcSession.on("muted", () => session.update({ isMuted: true }));
 		rtcSession.on("unmuted", () => session.update({ isMuted: false }));
 		rtcSession.on("failed", (event: EndEvent) => {
+			const reason = recordTermination(event);
 			// JsSIP emits failed(local, CANCELED) for an ordinary hang-up before answer.
 			const cancelled = event.originator === "local" && event.cause === JsSIP.C.causes.CANCELED;
 			cancelPendingDtmf(cancelled ? "Call cancelled" : "Call failed");
@@ -1033,7 +743,7 @@ export class JsSipTelephonyEngine implements TelephonyEngine {
 			}
 			this.runAsync(
 				"terminateSession",
-				() => this.terminateSession(session, cancelled ? "unanswered" : "failed"),
+				() => this.terminateSession(session, reason),
 				this.errorContext(session)
 			);
 		});
@@ -1059,11 +769,15 @@ export class JsSipTelephonyEngine implements TelephonyEngine {
 			(cause: unknown) =>
 				reportMediaFailure("WebRTC remote description failed", cause)
 		);
-		rtcSession.on("ended", () => {
+		rtcSession.on("ended", (event: EndEvent) => {
+			const reason = recordTermination(event);
+			if (reason === "failed") {
+				this.emitError("sessionFailed", sipFailureError("SIP session ended", event ?? {}), this.errorContext(session));
+			}
 			cancelPendingDtmf("Call ended");
 			this.runAsync(
 				"terminateSession",
-				() => this.terminateSession(session, "remoteEnded"),
+				() => this.terminateSession(session, reason),
 				this.errorContext(session)
 			);
 		});
@@ -1105,9 +819,14 @@ export class JsSipTelephonyEngine implements TelephonyEngine {
 		}
 	}
 
+	private disposeRecoveries(): void {
+		for (const recovery of this.recoveries.values()) recovery.dispose();
+		this.recoveries.clear();
+	}
+
 	private async terminateSession(
 		session: JsSipSession,
-		reason: "failed" | "remoteEnded" | "unanswered"
+		reason: ReturnType<typeof sessionTermination>["reason"]
 	): Promise<void> {
 		if (!this.sessions.has(session.id)) return;
 		session.update({
@@ -1116,10 +835,15 @@ export class JsSipTelephonyEngine implements TelephonyEngine {
 		});
 		try {
 			await this.clearPendingAnswer(session.snapshot.nativeCallId);
-			await reportCallEnded(session.snapshot.nativeCallId, reason);
+			if (reason === "localEnded") {
+				if (!this.nativeEnding.has(session.snapshot.nativeCallId)) await endCall(session.snapshot.nativeCallId);
+			} else {
+				await reportCallEnded(session.snapshot.nativeCallId, reason);
+			}
 		} finally {
 			this.sessions.delete(session.id);
 			this.sessionsByNativeId.delete(session.snapshot.nativeCallId);
+			this.nativeEnding.delete(session.snapshot.nativeCallId);
 			this.emitSnapshot();
 		}
 	}
@@ -1147,8 +871,10 @@ export class JsSipTelephonyEngine implements TelephonyEngine {
 	}
 
 	private async endFromSystem(nativeCallId: string): Promise<void> {
+		const session = this.sessionsByNativeId.get(nativeCallId);
+		if (session) this.nativeEnding.add(nativeCallId);
 		await this.clearPendingAnswer(nativeCallId);
-		await this.sessionsByNativeId.get(nativeCallId)?.terminate();
+		await session?.terminate();
 	}
 
 	private async callFromSystem(
@@ -1165,7 +891,7 @@ export class JsSipTelephonyEngine implements TelephonyEngine {
 		}
 		try {
 			await this.synchronizeCallKitAudio();
-			const rtcSession = this.ua.call(handle, {...AUDIO_OPTIONS, pcConfig: { iceServers: this.configuration?.iceServers } });
+			const rtcSession = this.ua.call(handle, { ...AUDIO_OPTIONS, pcConfig: { iceServers: this.configuration?.iceServers } });
 			this.attachSession(rtcSession, nativeCallId, rtcSession.id, "outgoing");
 		} catch (error) {
 			await reportCallEnded(nativeCallId, "failed");

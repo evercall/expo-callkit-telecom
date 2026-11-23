@@ -7,10 +7,10 @@ const { spawnSync } = require("node:child_process");
 const { test } = require("node:test");
 
 test("native incoming-call correlation, deadlines, persistence and answer fulfillment", {
-  skip: process.platform !== "darwin",
+	skip: process.platform !== "darwin",
 }, () => {
-  const folder = mkdtempSync(join(tmpdir(), "callkit-incoming-test-"));
-  const harness = `
+	const folder = mkdtempSync(join(tmpdir(), "callkit-incoming-test-"));
+	const harness = `
 import Foundation
 struct Logger { func debug(_ message: String) {} }
 enum Log { static let call = Logger() }
@@ -146,19 +146,19 @@ enum Log { static let call = Logger() }
   }
 }
 `;
-  try {
-    const source = join(folder, "Harness.swift");
-    const binary = join(folder, "test-incoming");
-    writeFileSync(source, harness);
-    const compile = spawnSync("swiftc", [
-      "-parse-as-library", resolve(__dirname, "../../../ios/Stores/IncomingCallRegistry.swift"),
-      resolve(__dirname, "../../../ios/Managers/FulfillRequestManager.swift"),
-      resolve(__dirname, "../../../ios/Managers/PushPayloadProfileStore.swift"), source, "-o", binary,
-    ], { encoding: "utf8" });
-    assert.equal(compile.status, 0, compile.stdout + compile.stderr);
-    const run = spawnSync(binary, [], { encoding: "utf8", timeout: 15000 });
-    assert.equal(run.status, 0, run.stdout + run.stderr);
-  } finally {
-    rmSync(folder, { recursive: true, force: true });
-  }
+	try {
+		const source = join(folder, "Harness.swift");
+		const binary = join(folder, "test-incoming");
+		writeFileSync(source, harness);
+		const compile = spawnSync("swiftc", [
+			"-parse-as-library", resolve(__dirname, "../../../ios/Stores/IncomingCallRegistry.swift"),
+			resolve(__dirname, "../../../ios/Managers/FulfillRequestManager.swift"),
+			resolve(__dirname, "../../../ios/Managers/PushPayloadProfileStore.swift"), source, "-o", binary,
+		], { encoding: "utf8" });
+		assert.equal(compile.status, 0, compile.stdout + compile.stderr);
+		const run = spawnSync(binary, [], { encoding: "utf8", timeout: 15000 });
+		assert.equal(run.status, 0, run.stdout + run.stderr);
+	} finally {
+		rmSync(folder, { recursive: true, force: true });
+	}
 });

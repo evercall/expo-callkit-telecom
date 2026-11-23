@@ -269,5 +269,5 @@ export interface TelephonyEngine {
 	 */
 	subscribeToErrors(listener: TelephonyErrorListener): () => void;
 
-	getConfiguration(): TelephonyConfiguration|undefined;
+	getConfiguration(): TelephonyConfiguration | undefined;
 }
